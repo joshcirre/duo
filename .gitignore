@@ -1,0 +1,32 @@
+# Dependencies
+/node_modules
+/vendor
+
+# Build outputs
+/dist
+*.lock
+
+# IDE
+.idea
+.vscode
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Testing
+coverage/
+.phpunit.result.cache
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Workbench
+/workbench/database/database.sqlite
+/workbench/storage/*
+!/workbench/storage/.gitkeep
