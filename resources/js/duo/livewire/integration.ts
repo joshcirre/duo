@@ -93,12 +93,25 @@ export class LivewireIntegration {
    * Setup Livewire-specific hooks
    */
   private setupLivewireHooks(): void {
+    if (this.config.debug) {
+      console.log('[Duo] Setting up Livewire hooks, Livewire available:', typeof window.Livewire !== 'undefined');
+    }
+
     // Wait for Livewire to be available
     if (typeof window.Livewire === 'undefined') {
+      if (this.config.debug) {
+        console.log('[Duo] Waiting for livewire:init event...');
+      }
       document.addEventListener('livewire:init', () => {
+        if (this.config.debug) {
+          console.log('[Duo] livewire:init event fired');
+        }
         this.attachLivewireHooks();
       });
     } else {
+      if (this.config.debug) {
+        console.log('[Duo] Livewire already available, attaching hooks immediately');
+      }
       this.attachLivewireHooks();
     }
   }
@@ -107,10 +120,19 @@ export class LivewireIntegration {
    * Attach hooks to Livewire events
    */
   private attachLivewireHooks(): void {
+    // Log all available hooks for debugging
+    if (this.config.debug) {
+      console.log('[Duo] Attaching Livewire hooks...');
+    }
+
+    // Hook into component initialization to replace server data with IndexedDB data
+    window.Livewire.hook('component.init', async ({ component }: any) => {
+      await this.hydrateComponentFromCache(component);
+    });
+
     window.Livewire.hook('commit', ({ component, commit, respond }: any) => {
-      // Intercept component updates
       if (this.config.debug) {
-        console.log('[Duo] Livewire commit:', component.name);
+        console.log('[Duo] Livewire commit:', { component: component.name, commit });
       }
     });
 
@@ -121,15 +143,84 @@ export class LivewireIntegration {
     });
 
     window.Livewire.hook('message.received', async ({ message, component }: any) => {
+      if (this.config.debug) {
+        console.log('[Duo] Livewire message received:', { message, component: component.name });
+      }
+
       // Cache data from Livewire responses
       if (message.response?.serverMemo?.data) {
         await this.cacheComponentData(component.name, message.response.serverMemo.data);
       }
 
-      if (this.config.debug) {
-        console.log('[Duo] Livewire message received:', message);
-      }
+      // After receiving response, refresh component from cache
+      await this.hydrateComponentFromCache(component);
     });
+  }
+
+  /**
+   * Hydrate component data from IndexedDB cache
+   */
+  private async hydrateComponentFromCache(component: any): Promise<void> {
+    try {
+      const data = component.$wire?.$get?.('$all');
+
+      if (!data || typeof data !== 'object') {
+        return;
+      }
+
+      // Look for properties that contain arrays (likely model collections)
+      for (const [key, value] of Object.entries(data)) {
+        if (Array.isArray(value) && value.length > 0 && this.isModelData(value[0])) {
+          // Try to find matching store
+          const storeName = this.detectStoreFromData(value[0]);
+          if (storeName) {
+            const store = this.db.getStore(storeName);
+            if (store) {
+              const cachedData = await store.toArray();
+              // Update the component with cached data
+              component.$wire?.$set?.(key, cachedData);
+
+              if (this.config.debug) {
+                console.log(`[Duo] Hydrated ${key} with ${cachedData.length} records from IndexedDB`);
+              }
+            }
+          }
+        }
+      }
+    } catch (error) {
+      if (this.config.debug) {
+        console.warn('[Duo] Error hydrating component from cache:', error);
+      }
+    }
+  }
+
+  /**
+   * Handle method calls that might modify data
+   */
+  private async handleMethodCall(component: any, payload: any): Promise<void> {
+    // This is where we'd intercept methods like addTodo, deleteTodo, etc.
+    // For now, we'll let the normal flow happen and rely on message.received to sync
+  }
+
+  /**
+   * Detect which store to use based on model data
+   */
+  private detectStoreFromData(modelData: any): string | null {
+    // Check if data has common Laravel model properties
+    if (!this.isModelData(modelData)) {
+      return null;
+    }
+
+    // Try to detect from the data structure
+    // This is a simple heuristic - you might need to make this smarter
+    const stores = this.db.getAllStores();
+    for (const [storeName] of stores) {
+      // For now, just return the first store that exists
+      // In a real implementation, you'd want to be smarter about this
+      return storeName;
+    }
+
+    return null;
   }
 
   /**

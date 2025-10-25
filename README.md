@@ -25,8 +25,9 @@ composer require joshcirre/duo
 
 ```bash
 npm install -D @joshcirre/vite-plugin-duo
-npm install dexie
 ```
+
+> **Note:** Dexie is automatically installed as a dependency.
 
 ## Quick Start
 
@@ -55,15 +56,7 @@ class Post extends Model
 }
 ```
 
-### 2. Generate the Manifest
-
-```bash
-php artisan duo:generate
-```
-
-This creates a manifest file at `resources/js/duo/manifest.json` with your model schema.
-
-### 3. Configure Vite
+### 2. Configure Vite
 
 Add the Duo plugin to your `vite.config.js`:
 
@@ -78,26 +71,35 @@ export default defineConfig({
             input: ['resources/css/app.css', 'resources/js/app.js'],
             refresh: true,
         }),
-        duo({
-            manifestPath: 'resources/js/duo/manifest.json',
-            watch: true,
-        }),
+        duo(),  // That's it! Duo will auto-generate the manifest
     ],
 });
 ```
 
-### 4. Initialize in Your JavaScript
+### 3. Initialize in Your JavaScript
 
 ```javascript
-import { initializeDuo } from '@joshcirre/duo/client';
+import { initializeDuo } from '@joshcirre/vite-plugin-duo/client';
+import manifest from 'virtual:duo-manifest';
 
 // Initialize Duo when your app loads
 initializeDuo({
+    manifest,
     debug: import.meta.env.DEV,
     syncInterval: 5000,
     maxRetries: 3,
 });
 ```
+
+### 4. Build Your Assets
+
+```bash
+npm run build
+# or for development
+npm run dev
+```
+
+The Vite plugin will automatically run `php artisan duo:generate` and create the manifest!
 
 ## How It Works
 

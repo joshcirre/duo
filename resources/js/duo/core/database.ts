@@ -52,12 +52,14 @@ export class DuoDatabase extends Dexie {
       ].join(',');
 
       schema[storeName] = indexes;
-
-      // Store reference for later use
-      this.stores.set(storeName, this.table(storeName));
     }
 
     this.version(this.config.databaseVersion).stores(schema);
+
+    // Now populate the stores map AFTER defining the schema
+    for (const storeName of Object.keys(this.config.stores)) {
+      this.stores.set(storeName, this.table(storeName));
+    }
 
     if (this.config.debug) {
       console.log('[Duo] Database initialized with stores:', Object.keys(schema));

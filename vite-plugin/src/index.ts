@@ -1,7 +1,13 @@
-import type { Plugin } from 'vite';
+import type { Plugin, HmrContext } from 'vite';
+import type { PluginContext } from 'rollup';
 import { resolve } from 'path';
 import { existsSync, readFileSync } from 'fs';
-import { execSync } from 'child_process';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+import { minimatch } from 'minimatch';
+import osPath from 'path';
+
+const execAsync = promisify(exec);
 
 export interface DuoPluginOptions {
   /**
@@ -10,9 +16,14 @@ export interface DuoPluginOptions {
   manifestPath?: string;
 
   /**
-   * Whether to watch for manifest changes and trigger reload
+   * Whether to watch for model changes and regenerate manifest
    */
   watch?: boolean;
+
+  /**
+   * Glob patterns to watch for model changes
+   */
+  patterns?: string[];
 
   /**
    * Base path for Duo resources
@@ -23,6 +34,11 @@ export interface DuoPluginOptions {
    * Whether to automatically run php artisan duo:generate
    */
   autoGenerate?: boolean;
+
+  /**
+   * Custom artisan command to run
+   */
+  command?: string;
 }
 
 /**
@@ -32,13 +48,51 @@ export function duo(options: DuoPluginOptions = {}): Plugin {
   const {
     manifestPath = 'resources/js/duo/manifest.json',
     watch = true,
+    patterns = ['app/Models/**/*.php'],
     basePath = process.cwd(),
     autoGenerate = true,
+    command = 'php artisan duo:generate',
   } = options;
 
   const resolvedManifestPath = resolve(basePath, manifestPath);
   const VIRTUAL_MODULE_ID = 'virtual:duo-manifest';
   const RESOLVED_VIRTUAL_MODULE_ID = '\0' + VIRTUAL_MODULE_ID;
+
+  // Normalize patterns for cross-platform compatibility
+  const normalizedPatterns = patterns.map((pattern) => pattern.replace(/\\/g, '/'));
+
+  let context: PluginContext;
+
+  const runGenerate = async (reason?: string) => {
+    if (!autoGenerate) return;
+
+    if (reason) {
+      context.info(`[Duo] ${reason}, regenerating manifest...`);
+    }
+
+    try {
+      await execAsync(command, { cwd: basePath });
+
+      if (existsSync(resolvedManifestPath)) {
+        const manifest = JSON.parse(readFileSync(resolvedManifestPath, 'utf-8'));
+        context.info(`[Duo] Manifest generated with ${Object.keys(manifest).length} model(s)`);
+      }
+    } catch (error) {
+      context.error('[Duo] Failed to generate manifest: ' + error);
+    }
+  };
+
+  const shouldRegenerate = (file: string, server: HmrContext['server']): boolean => {
+    const normalizedFile = file.replace(/\\/g, '/');
+
+    return normalizedPatterns.some((pattern) => {
+      const resolvedPattern = osPath
+        .resolve(server.config.root, pattern)
+        .replace(/\\/g, '/');
+
+      return minimatch(normalizedFile, resolvedPattern);
+    });
+  };
 
   return {
     name: 'vite-plugin-duo',
@@ -85,6 +139,12 @@ export function duo(options: DuoPluginOptions = {}): Plugin {
       });
     },
 
+    async handleHotUpdate({ file, server }) {
+      if (watch && shouldRegenerate(file, server)) {
+        await runGenerate('Model file changed');
+      }
+    },
+
     transform(code, id) {
       // Inject Duo client initialization in Livewire components
       if (id.includes('@livewire') || id.includes('livewire/livewire.js')) {
@@ -98,20 +158,12 @@ export function duo(options: DuoPluginOptions = {}): Plugin {
       return null;
     },
 
-    buildStart() {
-      // Auto-generate manifest if it doesn't exist
-      if (!existsSync(resolvedManifestPath) && autoGenerate) {
-        console.log('[Duo] Manifest not found. Running php artisan duo:generate...');
-        try {
-          execSync('php artisan duo:generate', {
-            cwd: basePath,
-            stdio: 'inherit'
-          });
-          console.log('[Duo] Manifest generated successfully');
-        } catch (error) {
-          console.error('[Duo] Failed to generate manifest:', error);
-          return;
-        }
+    async buildStart() {
+      context = this;
+
+      // Auto-generate manifest at build start
+      if (autoGenerate) {
+        await runGenerate(!existsSync(resolvedManifestPath) ? 'Manifest not found' : undefined);
       }
 
       if (existsSync(resolvedManifestPath)) {
@@ -119,12 +171,14 @@ export function duo(options: DuoPluginOptions = {}): Plugin {
 
         try {
           const manifest = JSON.parse(readFileSync(resolvedManifestPath, 'utf-8'));
-          console.log(`[Duo] Loaded manifest with ${Object.keys(manifest).length} model(s)`);
+          if (!autoGenerate) {
+            context.info(`[Duo] Loaded manifest with ${Object.keys(manifest).length} model(s)`);
+          }
         } catch (error) {
-          console.warn('[Duo] Failed to parse manifest file:', error);
+          context.warn('[Duo] Failed to parse manifest file: ' + error);
         }
-      } else {
-        console.warn(
+      } else if (!autoGenerate) {
+        context.warn(
           `[Duo] Manifest file not found at ${resolvedManifestPath}. Run 'php artisan duo:generate' to create it.`
         );
       }

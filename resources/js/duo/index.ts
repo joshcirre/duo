@@ -1,6 +1,7 @@
 import { DuoDatabase, type DuoConfig, type DuoRecord } from './core/database';
 import { SyncQueue, type SyncQueueConfig } from './sync/queue';
-import { LivewireIntegration, type LivewireIntegrationConfig } from './livewire/integration';
+import { DuoLivewireInterceptor } from './livewire/duo-interceptor';
+import { DuoAlpineIntegration } from './livewire/alpine-integration';
 
 export interface DuoClientConfig {
   manifest?: Record<string, any>;
@@ -8,7 +9,6 @@ export interface DuoClientConfig {
   syncInterval?: number;
   maxRetries?: number;
   debug?: boolean;
-  livewire?: LivewireIntegrationConfig;
 }
 
 /**
@@ -17,7 +17,8 @@ export interface DuoClientConfig {
 export class DuoClient {
   private db?: DuoDatabase;
   private syncQueue?: SyncQueue;
-  private livewireIntegration?: LivewireIntegration;
+  private livewireInterceptor?: DuoLivewireInterceptor;
+  private alpineIntegration: DuoAlpineIntegration;
   private config: DuoClientConfig;
 
   constructor(config: DuoClientConfig = {}) {
@@ -28,6 +29,15 @@ export class DuoClient {
       debug: false,
       ...config,
     };
+
+    // Initialize Alpine integration
+    this.alpineIntegration = new DuoAlpineIntegration();
+
+    // Make Alpine integration available globally for x-data directives
+    if (typeof window !== 'undefined') {
+      (window as any).Duo = (window as any).Duo || {};
+      (window as any).Duo.alpine = this.alpineIntegration.alpine.bind(this.alpineIntegration);
+    }
   }
 
   /**
@@ -47,6 +57,9 @@ export class DuoClient {
 
     this.db = new DuoDatabase(dbConfig);
 
+    // Hydrate stores from server on first load
+    await this.hydrateStores();
+
     // Create sync queue
     const syncConfig: SyncQueueConfig = {
       maxRetries: this.config.maxRetries!,
@@ -65,13 +78,14 @@ export class DuoClient {
     this.syncQueue = new SyncQueue(this.db, syncConfig);
     this.syncQueue.start();
 
-    // Initialize Livewire integration
-    this.livewireIntegration = new LivewireIntegration(
+    // Initialize Livewire interceptor for Duo-enabled components
+    this.livewireInterceptor = new DuoLivewireInterceptor(
       this.db,
       this.syncQueue,
-      this.config.livewire
+      this.config.debug,
+      this.alpineIntegration
     );
-    this.livewireIntegration.initialize();
+    this.livewireInterceptor.initialize();
 
     if (this.config.debug) {
       console.log('[Duo] Client initialized');
@@ -93,6 +107,19 @@ export class DuoClient {
     } catch (error) {
       console.error('[Duo] Failed to load manifest:', error);
       return {};
+    }
+  }
+
+  /**
+   * Hydrate stores from server on first load
+   * Note: This is now handled by Alpine integration on component mount
+   * which syncs server data from x-data to IndexedDB on every page load
+   */
+  private async hydrateStores(): Promise<void> {
+    // This method is kept for backward compatibility but is now a no-op
+    // Server data syncing happens in alpine-integration.ts via x-data
+    if (this.config.debug) {
+      console.log('[Duo] Hydration will be handled by Alpine integration on component mount');
     }
   }
 
@@ -135,7 +162,6 @@ export class DuoClient {
    */
   async destroy(): Promise<void> {
     this.syncQueue?.stop();
-    this.livewireIntegration?.destroy();
     await this.db?.close();
 
     if (this.config.debug) {
@@ -158,6 +184,11 @@ export async function initializeDuo(config?: DuoClientConfig): Promise<DuoClient
   duoInstance = new DuoClient(config);
   await duoInstance.initialize();
 
+  // Make it globally available for easy access
+  if (typeof window !== 'undefined') {
+    (window as any).duo = duoInstance;
+  }
+
   return duoInstance;
 }
 
@@ -169,5 +200,135 @@ export function getDuo(): DuoClient | null {
 }
 
 // Re-export types and classes
-export { DuoDatabase, SyncQueue, LivewireIntegration };
-export type { DuoConfig, DuoRecord, SyncQueueConfig, LivewireIntegrationConfig };
+export { DuoDatabase, SyncQueue, DuoLivewireInterceptor };
+export type { DuoConfig, DuoRecord, SyncQueueConfig };
+
+/**
+ * Helper functions for easy data access
+ */
+
+/**
+ * Get all records from a table
+ */
+export async function getAll(table: string): Promise<any[]> {
+  const duo = getDuo();
+  if (!duo || !duo.getDatabase()) return [];
+
+  const storeName = `App_Models_${table.charAt(0).toUpperCase() + table.slice(1)}`;
+  const store = duo.getDatabase()!.getStore(storeName);
+
+  if (!store) return [];
+  return await store.toArray();
+}
+
+/**
+ * Get a single record by ID
+ */
+export async function getById(table: string, id: number | string): Promise<any | null> {
+  const duo = getDuo();
+  if (!duo || !duo.getDatabase()) return null;
+
+  const storeName = `App_Models_${table.charAt(0).toUpperCase() + table.slice(1)}`;
+  const store = duo.getDatabase()!.getStore(storeName);
+
+  if (!store) return null;
+  return await store.get(id);
+}
+
+/**
+ * Create a new record
+ */
+export async function create(table: string, data: Record<string, any>): Promise<any> {
+  const duo = getDuo();
+  if (!duo || !duo.getDatabase() || !duo.getSyncQueue()) {
+    throw new Error('Duo not initialized');
+  }
+
+  const storeName = `App_Models_${table.charAt(0).toUpperCase() + table.slice(1)}`;
+  const store = duo.getDatabase()!.getStore(storeName);
+
+  if (!store) throw new Error(`Store not found: ${storeName}`);
+
+  // Generate temporary ID for optimistic update
+  const tempId = Date.now();
+  const record = {
+    ...data,
+    id: tempId,
+    _duo_pending_sync: true,
+    _duo_operation: 'create' as const,
+  };
+
+  await store.put(record);
+
+  // Queue for sync
+  await duo.getSyncQueue()!.enqueue({
+    storeName,
+    operation: 'create',
+    data: record,
+  });
+
+  return record;
+}
+
+/**
+ * Update an existing record
+ */
+export async function update(table: string, id: number | string, data: Record<string, any>): Promise<any> {
+  const duo = getDuo();
+  if (!duo || !duo.getDatabase() || !duo.getSyncQueue()) {
+    throw new Error('Duo not initialized');
+  }
+
+  const storeName = `App_Models_${table.charAt(0).toUpperCase() + table.slice(1)}`;
+  const store = duo.getDatabase()!.getStore(storeName);
+
+  if (!store) throw new Error(`Store not found: ${storeName}`);
+
+  const existing = await store.get(id);
+  if (!existing) throw new Error(`Record not found: ${id}`);
+
+  const updated = {
+    ...existing,
+    ...data,
+    _duo_pending_sync: true,
+    _duo_operation: 'update' as const,
+  };
+
+  await store.put(updated);
+
+  // Queue for sync
+  await duo.getSyncQueue()!.enqueue({
+    storeName,
+    operation: 'update',
+    data: updated,
+  });
+
+  return updated;
+}
+
+/**
+ * Delete a record
+ */
+export async function remove(table: string, id: number | string): Promise<void> {
+  const duo = getDuo();
+  if (!duo || !duo.getDatabase() || !duo.getSyncQueue()) {
+    throw new Error('Duo not initialized');
+  }
+
+  const storeName = `App_Models_${table.charAt(0).toUpperCase() + table.slice(1)}`;
+  const store = duo.getDatabase()!.getStore(storeName);
+
+  if (!store) throw new Error(`Store not found: ${storeName}`);
+
+  const existing = await store.get(id);
+  if (!existing) return;
+
+  await store.delete(id);
+
+  // Queue for sync
+  await duo.getSyncQueue()!.enqueue({
+    storeName,
+    operation: 'delete',
+    data: existing,
+  });
+}

@@ -1,0 +1,9 @@
+{
+  "Workbench_App_Models_Todo": {
+    "model": "Workbench\\App\\Models\\Todo",
+    "table": "todos",
+    "primaryKey": "id",
+    "indexes": ["id"],
+    "timestamps": true
+  }
+}
