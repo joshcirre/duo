@@ -64,12 +64,11 @@ export class DuoLivewireInterceptor {
 
       console.log('[Duo] 🎯 Intercepting duo-action:', method, params);
 
-      // Get the component from the event target
-      const target = customEvent.target as HTMLElement;
-      const componentEl = target.closest('[wire\\:id]');
+      // Find the component element - look for any Duo-enabled component on the page
+      const componentEl = document.querySelector('[data-duo-enabled][wire\\:id]');
 
       if (!componentEl) {
-        console.warn('[Duo] Could not find Livewire component');
+        console.warn('[Duo] Could not find Duo-enabled Livewire component');
         return;
       }
 
@@ -84,7 +83,17 @@ export class DuoLivewireInterceptor {
       // Handle it locally in IndexedDB
       const call = { method, params };
       await this.handleCallLocally(component, call);
-      await this.hydrateFromIndexedDB(component);
+
+      // Call the component's duoSync() method to update its reactive data
+      if (typeof (window as any).Alpine !== 'undefined' && componentEl) {
+        const alpineData = (window as any).Alpine.$data(componentEl);
+        if (alpineData && typeof alpineData.duoSync === 'function') {
+          console.log('[Duo] Calling component duoSync()');
+          await alpineData.duoSync();
+        } else {
+          console.warn('[Duo] Component does not have duoSync() method');
+        }
+      }
     };
 
     // Register the listener on both document and window
@@ -126,7 +135,16 @@ export class DuoLivewireInterceptor {
 
       const call = { method: action, params: [], formData };
       await this.handleCallLocally(component, call);
-      await this.hydrateFromIndexedDB(component);
+
+      // Call the component's duoSync() method to update its reactive data
+      const formComponentEl = target.closest('[data-duo-enabled][wire\\:id]');
+      if (typeof (window as any).Alpine !== 'undefined' && formComponentEl) {
+        const alpineData = (window as any).Alpine.$data(formComponentEl);
+        if (alpineData && typeof alpineData.duoSync === 'function') {
+          console.log('[Duo] Calling component duoSync() after form submit');
+          await alpineData.duoSync();
+        }
+      }
 
       // Clear the form after successful submission
       target.reset();

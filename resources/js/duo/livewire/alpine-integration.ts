@@ -132,29 +132,49 @@ export class DuoAlpineIntegration {
     const store = db.getStore(storeName);
     if (!store) return;
 
-    // Get all items from IndexedDB
-    const items = await store.getAll();
+    // Get all items from IndexedDB (Dexie uses toArray, not getAll)
+    const items = await store.toArray();
 
     console.log('[Duo Alpine] Syncing from IndexedDB:', items.length, 'items');
 
-    // Access Alpine's reactive data through the element's __x.$data
-    // This is Alpine's internal reactive proxy
-    const alpineData = (element as any).__x?.$data;
+    // Access Alpine's reactive scope directly via __x
+    const alpineScope = (element as any).__x;
 
-    if (!alpineData) {
-      console.warn('[Duo Alpine] Could not access Alpine reactive data');
+    if (!alpineScope) {
+      console.error('[Duo Alpine] Element does not have Alpine scope (__x)');
+      console.log('[Duo Alpine] Element:', element);
       return;
     }
 
-    // Find the property name that contains array data
-    const dataKey = this.findArrayProperty(alpineData);
+    console.log('[Duo Alpine] Found Alpine scope, getting reactive data...');
+
+    // Alpine stores reactive data in __x.$data (or sometimes __x.data)
+    // We need to update it through Alpine's reactive system
+    const reactiveData = alpineScope.$data || alpineScope.data;
+
+    if (!reactiveData) {
+      console.error('[Duo Alpine] Could not access reactive data from Alpine scope');
+      return;
+    }
+
+    console.log('[Duo Alpine] Successfully accessed Alpine reactive data');
+    console.log('[Duo Alpine] Current todos:', reactiveData.todos);
+
+    // Find the array property (should be 'todos')
+    const dataKey = this.findArrayProperty(reactiveData);
 
     if (dataKey) {
       console.log(`[Duo Alpine] Updating ${dataKey} with ${items.length} items`);
-      // Update through Alpine's reactive proxy to trigger reactivity
-      alpineData[dataKey] = items;
+
+      // Update directly on Alpine's reactive data
+      // This will trigger Alpine's reactivity
+      reactiveData[dataKey] = items;
+
+      console.log('[Duo Alpine] ✅ Updated reactive data');
+      console.log('[Duo Alpine] New todos:', reactiveData.todos);
     } else {
-      console.warn('[Duo Alpine] Could not find array property in Alpine data');
+      console.warn('[Duo Alpine] Could not find array property in reactive data');
+      console.log('[Duo Alpine] Available keys:', Object.keys(reactiveData));
     }
   }
 

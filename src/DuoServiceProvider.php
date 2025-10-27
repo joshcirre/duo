@@ -132,14 +132,32 @@ final class DuoServiceProvider extends ServiceProvider
                     $html
                 );
 
-                // Prepare component data for Alpine (encode as JSON for x-data)
-                // Use allData which includes both component properties and view data (like todos)
-                $alpineData = htmlspecialchars(json_encode($allData), ENT_QUOTES, 'UTF-8');
+                // Prepare component data for Alpine
+                $alpineDataJson = json_encode($allData);
+
+                // Inject Duo sync methods directly into x-data
+                // This gives the component access to its reactive data via 'this'
+                $xDataContent = '{
+                    ...' . $alpineDataJson . ',
+                    async duoSync() {
+                        if (!window.duo) return;
+                        const db = window.duo.getDatabase();
+                        if (!db) return;
+                        const store = db.getStore(\'App_Models_Todo\');
+                        if (!store) return;
+                        const items = await store.toArray();
+                        console.log(\'[Duo] Syncing\', items.length, \'items to component\');
+                        this.todos = items;
+                    },
+                    init() {
+                        setTimeout(() => this.duoSync(), 100);
+                    }
+                }';
 
                 // Add duo-enabled and Alpine x-data to the root element
                 $html = preg_replace(
                     '/^(<[^>]+?)>/',
-                    '$1 data-duo-enabled="true" x-data="window.Duo?.alpine?.(\$el, ' . $alpineData . ') || {}">',
+                    '$1 data-duo-enabled="true" x-data="' . htmlspecialchars($xDataContent, ENT_QUOTES, 'UTF-8') . '">',
                     $html,
                     1
                 );
