@@ -1,7 +1,5 @@
 import { DuoDatabase, type DuoConfig, type DuoRecord } from './core/database';
 import { SyncQueue, type SyncQueueConfig } from './sync/queue';
-import { DuoLivewireInterceptor } from './livewire/duo-interceptor';
-import { DuoAlpineIntegration } from './livewire/alpine-integration';
 
 export interface DuoClientConfig {
   manifest?: Record<string, any>;
@@ -17,8 +15,6 @@ export interface DuoClientConfig {
 export class DuoClient {
   private db?: DuoDatabase;
   private syncQueue?: SyncQueue;
-  private livewireInterceptor?: DuoLivewireInterceptor;
-  private alpineIntegration: DuoAlpineIntegration;
   private config: DuoClientConfig;
 
   constructor(config: DuoClientConfig = {}) {
@@ -29,15 +25,6 @@ export class DuoClient {
       debug: false,
       ...config,
     };
-
-    // Initialize Alpine integration
-    this.alpineIntegration = new DuoAlpineIntegration();
-
-    // Make Alpine integration available globally for x-data directives
-    if (typeof window !== 'undefined') {
-      (window as any).Duo = (window as any).Duo || {};
-      (window as any).Duo.alpine = this.alpineIntegration.alpine.bind(this.alpineIntegration);
-    }
   }
 
   /**
@@ -77,15 +64,6 @@ export class DuoClient {
 
     this.syncQueue = new SyncQueue(this.db, syncConfig);
     this.syncQueue.start();
-
-    // Initialize Livewire interceptor for Duo-enabled components
-    this.livewireInterceptor = new DuoLivewireInterceptor(
-      this.db,
-      this.syncQueue,
-      this.config.debug,
-      this.alpineIntegration
-    );
-    this.livewireInterceptor.initialize();
 
     if (this.config.debug) {
       console.log('[Duo] Client initialized');
@@ -200,7 +178,7 @@ export function getDuo(): DuoClient | null {
 }
 
 // Re-export types and classes
-export { DuoDatabase, SyncQueue, DuoLivewireInterceptor };
+export { DuoDatabase, SyncQueue };
 export type { DuoConfig, DuoRecord, SyncQueueConfig };
 
 /**

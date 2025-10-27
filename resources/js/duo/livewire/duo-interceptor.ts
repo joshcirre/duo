@@ -185,12 +185,12 @@ export class DuoLivewireInterceptor {
       console.log('[Duo] Component state:', component.$wire?.$get?.('$all'));
     }
 
-    // First, cache any models that came from the server
+    // Cache any models that came from the server
     const componentData = component.$wire?.$get?.('$all') || {};
     await this.cacheModelsFromData(componentData);
 
-    // Then, load data from IndexedDB and populate component
-    await this.hydrateFromIndexedDB(component);
+    // Note: We don't hydrate here anymore - the component's init() method
+    // in x-data will call duoSync() after Alpine initializes
   }
 
   /**
@@ -219,8 +219,7 @@ export class DuoLivewireInterceptor {
     const componentData = component.$wire?.$get?.('$all') || {};
     await this.cacheModelsFromData(componentData);
 
-    // Refresh component from IndexedDB to show latest cached data
-    await this.hydrateFromIndexedDB(component);
+    // Component will sync via duoSync() in its init() method
   }
 
   /**
@@ -315,10 +314,7 @@ export class DuoLivewireInterceptor {
       }
     }
 
-    // If we handled it locally, refresh the component from IndexedDB
-    if (handledLocally) {
-      await this.hydrateFromIndexedDB(component);
-    }
+    // Component will sync via duoSync() which is called after handleCallLocally
 
     // Return true to prevent network request if we handled it
     return handledLocally;

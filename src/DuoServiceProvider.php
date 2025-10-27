@@ -101,7 +101,7 @@ final class DuoServiceProvider extends ServiceProvider
             \Log::info('[Duo] Component DOES use Duo trait - will transform HTML');
 
             // Return a finisher callback that will transform the HTML
-            return function ($html, $replaceHtml = null, $viewContext = null) use ($properties, $view) {
+            return function ($html, $replaceHtml = null, $viewContext = null) use ($properties, $view, $component) {
                 \Log::info('[Duo] Finisher callback called with HTML length: ' . strlen($html));
 
                 // Get view data (which includes 'todos')
@@ -111,46 +111,120 @@ final class DuoServiceProvider extends ServiceProvider
                 $allData = array_merge($properties, $viewData);
                 \Log::info('[Duo] Combined data', ['keys' => array_keys($allData)]);
 
-                // Replace wire:model with name attributes for local-first form handling
+                // Detect public methods on the component
+                $componentMethods = $this->getComponentMethods($component);
+                \Log::info('[Duo] Component methods detected', ['methods' => $componentMethods]);
+
+                // Replace wire:model with x-model for Alpine
                 $html = preg_replace(
                     '/wire:model="([^"]+)"/i',
-                    'name="$1" data-duo-model="$1"',
+                    'x-model="$1"',
                     $html
                 );
 
-                // Replace wire:click with duo-action
-                $html = preg_replace(
-                    '/wire:click="([^"]+)"/i',
-                    'data-duo-action="$1" data-duo-trigger="click"',
-                    $html
-                );
-
-                // Replace wire:submit with duo-action
+                // Replace wire:submit with Alpine @submit (for forms outside loops)
                 $html = preg_replace(
                     '/wire:submit(?:\.prevent)?="([^"]+)"/i',
-                    'data-duo-action="$1" data-duo-trigger="submit"',
+                    '@submit.prevent="$1"',
+                    $html
+                );
+
+                // Replace wire:click with Alpine @click (for buttons outside loops)
+                $html = preg_replace(
+                    '/wire:click="([^"]+)"/i',
+                    '@click.prevent="$1"',
                     $html
                 );
 
                 // Prepare component data for Alpine
                 $alpineDataJson = json_encode($allData);
 
-                // Inject Duo sync methods directly into x-data
+                // Generate Alpine method implementations
+                $alpineMethods = $this->generateAlpineMethods($componentMethods, $allData);
+
+                // Build the x-data object by combining data properties and methods
+                // We'll build it as a proper JavaScript object instead of using spread
+                $dataProperties = [];
+                foreach ($allData as $key => $value) {
+                    $dataProperties[] = $key . ': ' . json_encode($value);
+                }
+                $dataPropertiesString = implode(",\n                    ", $dataProperties);
+
+                // Inject Duo sync methods and component methods directly into x-data
                 // This gives the component access to its reactive data via 'this'
                 $xDataContent = '{
-                    ...' . $alpineDataJson . ',
+                    ' . $dataPropertiesString . ',
+                    ' . $alpineMethods . '
+                    async syncServerToIndexedDB() {
+                        try {
+                            console.log(\'[Duo] syncServerToIndexedDB started\');
+
+                            // Wait for window.duo to be available (with timeout)
+                            let attempts = 0;
+                            while (!window.duo && attempts < 50) {
+                                await new Promise(resolve => setTimeout(resolve, 100));
+                                attempts++;
+                            }
+
+                            // Sync initial server data to IndexedDB (server is source of truth on load)
+                            if (!window.duo) {
+                                console.warn(\'[Duo] window.duo not available after waiting\');
+                                return;
+                            }
+
+                            const db = window.duo.getDatabase();
+                            if (!db) {
+                                console.warn(\'[Duo] Database not available\');
+                                return;
+                            }
+
+                            const store = db.getStore(\'App_Models_Todo\');
+                            if (!store) {
+                                console.warn(\'[Duo] Store not found\');
+                                return;
+                            }
+
+                            // Get todos from the initial server data
+                            const serverTodos = this.todos || [];
+                            console.log(\'[Duo] Server has\', serverTodos.length, \'todos:\', serverTodos);
+
+                            if (serverTodos.length === 0) {
+                                console.log(\'[Duo] No server todos to sync\');
+                                return;
+                            }
+
+                            console.log(\'[Duo] Clearing IndexedDB...\');
+                            await store.clear();
+
+                            console.log(\'[Duo] Writing\', serverTodos.length, \'todos to IndexedDB...\');
+                            await store.bulkPut(serverTodos.map(item => ({
+                                ...item,
+                                _duo_synced_at: Date.now(),
+                                _duo_pending_sync: false
+                            })));
+
+                            console.log(\'[Duo] ✅ Server data synced to IndexedDB successfully\');
+                        } catch (error) {
+                            console.error(\'[Duo] Error syncing server data to IndexedDB:\', error);
+                        }
+                    },
                     async duoSync() {
+                        // Load from IndexedDB to component
                         if (!window.duo) return;
                         const db = window.duo.getDatabase();
                         if (!db) return;
                         const store = db.getStore(\'App_Models_Todo\');
                         if (!store) return;
                         const items = await store.toArray();
-                        console.log(\'[Duo] Syncing\', items.length, \'items to component\');
+                        console.log(\'[Duo] Loading\', items.length, \'items from IndexedDB\');
                         this.todos = items;
                     },
-                    init() {
-                        setTimeout(() => this.duoSync(), 100);
+                    async init() {
+                        console.log(\'[Duo] Component init() called\');
+                        // First sync server data to IndexedDB, then load it back
+                        await this.syncServerToIndexedDB();
+                        await this.duoSync();
+                        console.log(\'[Duo] Component initialization complete\');
                     }
                 }';
 
@@ -307,18 +381,24 @@ final class DuoServiceProvider extends ServiceProvider
 
         $template = $bladeTemplate;
 
-        // 1. Transform wire:click="method({{ $todo->id }})" to Alpine @click
-        // Dispatch custom event to window for global listeners
+        // 1. Transform wire:click="method({{ $todo->id }})" to Alpine @click with direct method call
         $template = preg_replace(
             '/wire:click="(\w+)\(\{\{\s*\$' . $itemVarName . '->id\s*\}\}\)"/i',
-            '@click.prevent="window.dispatchEvent(new CustomEvent(\'duo-action\', { detail: { method: \'$1\', params: [' . $itemVarName . '.id] } }))"',
+            '@click.prevent="$1(' . $itemVarName . '.id)"',
             $template
         );
 
-        // Also handle wire:submit
+        // Also handle wire:submit with direct method call
         $template = preg_replace(
             '/wire:submit(?:\.prevent)?="(\w+)\(\{\{\s*\$' . $itemVarName . '->id\s*\}\}\)"/i',
-            '@submit.prevent="window.dispatchEvent(new CustomEvent(\'duo-action\', { detail: { method: \'$1\', params: [' . $itemVarName . '.id] } }))"',
+            '@submit.prevent="$1(' . $itemVarName . '.id)"',
+            $template
+        );
+
+        // Handle wire:submit without parameters (e.g., for addTodo)
+        $template = preg_replace(
+            '/wire:submit(?:\.prevent)?="(\w+)"/i',
+            '@submit.prevent="$1()"',
             $template
         );
 
@@ -440,5 +520,152 @@ final class DuoServiceProvider extends ServiceProvider
         }
 
         return in_array(Concerns\Syncable::class, class_uses_recursive($class), true);
+    }
+
+    /**
+     * Get public methods from the Livewire component (excluding lifecycle methods).
+     */
+    protected function getComponentMethods($component): array
+    {
+        $reflection = new \ReflectionClass($component);
+        $methods = [];
+
+        // Lifecycle and internal methods to exclude
+        $excludedMethods = [
+            'render', 'mount', 'hydrate', 'dehydrate', 'boot', 'booted',
+            'updating', 'updated', 'rendering', 'rendered',
+            '__construct', '__get', '__set', '__call', '__toString'
+        ];
+
+        foreach ($reflection->getMethods(\ReflectionMethod::IS_PUBLIC) as $method) {
+            // Skip if it's from parent classes (Livewire Component)
+            if ($method->getDeclaringClass()->getName() !== get_class($component)) {
+                continue;
+            }
+
+            // Skip excluded methods
+            if (in_array($method->getName(), $excludedMethods)) {
+                continue;
+            }
+
+            $methods[] = [
+                'name' => $method->getName(),
+                'parameters' => $method->getParameters(),
+            ];
+        }
+
+        return $methods;
+    }
+
+    /**
+     * Generate Alpine method implementations for Livewire methods.
+     */
+    protected function generateAlpineMethods(array $methods, array $data): string
+    {
+        if (empty($methods)) {
+            return '';
+        }
+
+        // Determine the store name from the data
+        $storeName = 'App_Models_Todo'; // Default for now
+        foreach ($data as $key => $value) {
+            if (is_array($value) || (is_object($value) && method_exists($value, 'toArray'))) {
+                // Assume the key is plural, convert to singular and capitalize
+                $singular = rtrim($key, 's');
+                $storeName = 'App_Models_' . ucfirst($singular);
+                break;
+            }
+        }
+
+        $alpineMethods = '';
+
+        foreach ($methods as $method) {
+            $methodName = $method['name'];
+            $params = $method['parameters'];
+
+            // Build parameter list
+            $paramList = [];
+            foreach ($params as $param) {
+                $paramList[] = $param->getName();
+            }
+            $paramString = implode(', ', $paramList);
+
+            // Generate method based on naming convention
+            if (str_starts_with($methodName, 'add') || str_starts_with($methodName, 'create')) {
+                // CREATE operation
+                $alpineMethods .= "async {$methodName}({$paramString}) {
+                        if (!window.duo) return;
+
+                        // Simple client-side validation
+                        if (!this.newTodoTitle || this.newTodoTitle.trim().length < 3) {
+                            alert('Title must be at least 3 characters');
+                            return;
+                        }
+
+                        const db = window.duo.getDatabase();
+                        const store = db.getStore('{$storeName}');
+                        if (!store) return;
+
+                        const newItem = {
+                            id: Date.now(),
+                            title: this.newTodoTitle.trim(),
+                            description: this.newTodoDescription ? this.newTodoDescription.trim() : '',
+                            completed: false,
+                            created_at: new Date().toISOString(),
+                            updated_at: new Date().toISOString(),
+                            _duo_pending_sync: true,
+                        };
+
+                        await store.put(newItem);
+                        console.log('[Duo] Created item in IndexedDB:', newItem);
+
+                        // Reset form fields
+                        this.newTodoTitle = '';
+                        this.newTodoDescription = '';
+
+                        // Refresh UI
+                        await this.duoSync();
+                    },\n";
+            } elseif (str_starts_with($methodName, 'toggle') || str_starts_with($methodName, 'update')) {
+                // UPDATE operation
+                $alpineMethods .= "async {$methodName}({$paramString}) {
+                        if (!window.duo) return;
+                        const db = window.duo.getDatabase();
+                        const store = db.getStore('{$storeName}');
+                        if (!store) return;
+
+                        const item = await store.get({$paramString});
+                        if (!item) return;
+
+                        await store.put({
+                            ...item,
+                            completed: !item.completed,
+                            updated_at: new Date().toISOString(),
+                            _duo_pending_sync: true,
+                        });
+
+                        console.log('[Duo] Updated item in IndexedDB:', {$paramString});
+
+                        // Refresh UI
+                        await this.duoSync();
+                    },\n";
+            } elseif (str_starts_with($methodName, 'delete') || str_starts_with($methodName, 'remove')) {
+                // DELETE operation
+                $alpineMethods .= "async {$methodName}({$paramString}) {
+                        if (!window.duo) return;
+                        const db = window.duo.getDatabase();
+                        const store = db.getStore('{$storeName}');
+                        if (!store) return;
+
+                        await store.delete({$paramString});
+                        console.log('[Duo] Deleted item from IndexedDB:', {$paramString});
+
+                        // Refresh UI
+                        await this.duoSync();
+                    },\n";
+            }
+        }
+
+        return $alpineMethods;
     }
 }

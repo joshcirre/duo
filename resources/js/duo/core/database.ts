@@ -13,6 +13,19 @@ export interface StoreConfig {
   primaryKey: string;
   indexes: string[];
   timestamps: boolean;
+  endpoints?: {
+    index: string;
+    show: string;
+    store: string;
+    update: string;
+    destroy: string;
+  };
+  sync?: {
+    enabled: boolean;
+    batchSize: number;
+    retryAttempts: number;
+    retryDelay: number;
+  };
 }
 
 export interface DuoRecord {

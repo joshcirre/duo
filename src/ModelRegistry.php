@@ -84,6 +84,21 @@ final class ModelRegistry
                 'primaryKey' => $metadata['primaryKey'],
                 'indexes' => [$metadata['primaryKey']],
                 'timestamps' => $metadata['timestamps'],
+                // API endpoints for background sync
+                'endpoints' => [
+                    'index' => "/api/duo/{$metadata['table']}",
+                    'show' => "/api/duo/{$metadata['table']}/{id}",
+                    'store' => "/api/duo/{$metadata['table']}",
+                    'update' => "/api/duo/{$metadata['table']}/{id}",
+                    'destroy' => "/api/duo/{$metadata['table']}/{id}",
+                ],
+                // Sync configuration
+                'sync' => [
+                    'enabled' => true,
+                    'batchSize' => 50, // Sync in batches
+                    'retryAttempts' => 3,
+                    'retryDelay' => 1000, // ms
+                ],
             ];
         }
 

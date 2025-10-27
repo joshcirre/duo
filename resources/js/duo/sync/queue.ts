@@ -145,7 +145,8 @@ export class SyncQueue {
       throw new Error(`Store config not found for: ${operation.storeName}`);
     }
 
-    const endpoint = operation.endpoint || this.getDefaultEndpoint(storeConfig.table, operation);
+    // Use endpoints from manifest if available, otherwise fallback to default
+    const endpoint = operation.endpoint || this.getEndpointFromConfig(storeConfig, operation);
     const method = this.getHttpMethod(operation.operation);
 
     const response = await fetch(endpoint, {
@@ -216,6 +217,30 @@ export class SyncQueue {
    */
   private removeFromQueue(id: string): void {
     this.queue = this.queue.filter((op) => op.id !== id);
+  }
+
+  /**
+   * Get endpoint from store config or fallback to default
+   */
+  private getEndpointFromConfig(storeConfig: any, operation: SyncOperation): string {
+    // Use endpoints from manifest if available
+    if (storeConfig.endpoints) {
+      const id = operation.data[storeConfig.primaryKey || 'id'];
+
+      switch (operation.operation) {
+        case 'create':
+          return storeConfig.endpoints.store;
+        case 'update':
+          return storeConfig.endpoints.update.replace('{id}', id);
+        case 'delete':
+          return storeConfig.endpoints.destroy.replace('{id}', id);
+        default:
+          return storeConfig.endpoints.index;
+      }
+    }
+
+    // Fallback to default endpoint building
+    return this.getDefaultEndpoint(storeConfig.table, operation);
   }
 
   /**
