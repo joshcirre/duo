@@ -376,9 +376,6 @@ final class DuoServiceProvider extends ServiceProvider
             'template_length' => strlen($bladeTemplate)
         ]);
 
-        // Transform Blade template to Alpine
-        $alpineTemplate = $this->transformBladeToAlpine($bladeTemplate, $itemVarName);
-
         // Find the @empty content
         $emptyPattern = '/@(?:forelse|foreach)\(\$' . $propName . '\s+as\s+\$\w+\).*?@empty(.*?)@endforelse/s';
         $emptyContent = '';
@@ -387,12 +384,15 @@ final class DuoServiceProvider extends ServiceProvider
             \Log::info('[Duo] Found @empty content, length: ' . strlen($emptyContent));
         }
 
-        // Find the rendered loop container in HTML (the space-y-3 div or similar)
+        // Find the rendered loop container in HTML (any div with space-y-* class or similar)
         // We'll look for the rendered content and replace it
-        $containerPattern = '/(<div class="space-y-3">)\s*(<!--\[if BLOCK\]><!\[endif\]-->)?\s*(.*)\s*(<!--\[if ENDBLOCK\]><!\[endif\]-->)\s*(<\/div>)/s';
+        $containerPattern = '/(<div class="space-y-\d+"[^>]*>)\s*(<!--\[if BLOCK\]><!\[endif\]-->)?\s*(.*)\s*(<!--\[if ENDBLOCK\]><!\[endif\]-->)\s*(<\/div>)/s';
 
         if (preg_match($containerPattern, $html, $containerMatch)) {
             \Log::info('[Duo] Found rendered container in HTML');
+
+            // Transform Blade template to Alpine
+            $alpineTemplate = $this->transformBladeToAlpine($bladeTemplate, $itemVarName);
 
             // Add x-cloak and x-show="duoReady" to the container div
             $containerOpenTag = preg_replace('/^(<\w+)/', '$1 x-cloak x-show="duoReady"', $containerMatch[1]);
@@ -433,6 +433,14 @@ final class DuoServiceProvider extends ServiceProvider
         \Log::info('[Duo] Transforming Blade to Alpine', ['itemVarName' => $itemVarName]);
 
         $template = $bladeTemplate;
+
+        // 0. Transform Alpine bindings that use Blade variables (e.g., :checked="$todo->completed")
+        // This handles Flux components that already use Alpine syntax
+        $template = preg_replace(
+            '/:(\w+)="\$' . $itemVarName . '->(\w+)"/i',
+            ':$1="' . $itemVarName . '.$2"',
+            $template
+        );
 
         // 1. Transform wire:click="method({{ $todo->id }})" to Alpine @click with direct method call
         $template = preg_replace(
