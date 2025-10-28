@@ -163,6 +163,33 @@ export class SyncQueue {
       throw new Error(`HTTP ${response.status}: ${response.statusText}`);
     }
 
+    // Handle server response for CREATE operations
+    // Server returns the record with the real ID
+    if (operation.operation === 'create') {
+      const serverData = await response.json();
+      const store = this.db.getStore(operation.storeName);
+
+      if (store && serverData) {
+        const primaryKey = storeConfig.primaryKey || 'id';
+        const tempId = operation.data[primaryKey];
+        const realId = serverData[primaryKey];
+
+        if (this.config.debug) {
+          console.log(`[Duo] Replacing temp ID ${tempId} with server ID ${realId}`);
+        }
+
+        // Delete the temporary record
+        await store.delete(tempId);
+
+        // Add the server record (without pending flag)
+        await store.put({
+          ...serverData,
+          _duo_pending_sync: false,
+          _duo_synced_at: Date.now(),
+        });
+      }
+    }
+
     if (this.config.debug) {
       console.log('[Duo] Operation synced:', operation);
     }

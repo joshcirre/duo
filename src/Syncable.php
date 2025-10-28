@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace JoshCirre\Duo\Concerns;
+namespace JoshCirre\Duo;
 
 use Illuminate\Database\Eloquent\Model;
 

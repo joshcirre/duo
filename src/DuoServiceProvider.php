@@ -87,14 +87,18 @@ final class DuoServiceProvider extends ServiceProvider
             return;
         }
 
-        \Log::info('[Duo] Registering EventBus listener for render event');
+        // Enable query logging globally so we can capture ALL queries including render queries
+        // This is safe because we only process queries for Duo-enabled components
+        \DB::enableQueryLog();
+
+        \Log::info('[Duo] Registering Livewire hooks with global query logging');
 
         // Hook into Livewire's render event to transform HTML for Duo components
         app(\Livewire\EventBus::class)->on('render', function ($component, $view, $properties) {
             \Log::info('[Duo] Render event triggered for component: ' . get_class($component));
-            // Check if component uses Duo trait
-            if (! in_array(\JoshCirre\Duo\Concerns\Duo::class, class_uses_recursive($component))) {
-                \Log::info('[Duo] Component does NOT use Duo trait');
+            // Check if component uses WithDuo trait
+            if (! in_array(\JoshCirre\Duo\WithDuo::class, class_uses_recursive($component))) {
+                \Log::info('[Duo] Component does NOT use WithDuo trait');
                 return null;
             }
 
@@ -102,6 +106,15 @@ final class DuoServiceProvider extends ServiceProvider
 
             // Return a finisher callback that will transform the HTML
             return function ($html, $replaceHtml = null, $viewContext = null) use ($properties, $view, $component) {
+                // Get ALL queries that have been logged so far (includes render queries)
+                $allQueries = \DB::getQueryLog();
+
+                // Filter to just SELECT queries (render queries)
+                $renderQueries = array_filter($allQueries, function($q) {
+                    return stripos($q['query'], 'select') === 0;
+                });
+
+                \Log::info('[Duo] Render queries', ['queries' => $renderQueries]);
                 \Log::info('[Duo] Finisher callback called with HTML length: ' . strlen($html));
 
                 // Get view data (which includes 'todos')
@@ -111,9 +124,9 @@ final class DuoServiceProvider extends ServiceProvider
                 $allData = array_merge($properties, $viewData);
                 \Log::info('[Duo] Combined data', ['keys' => array_keys($allData)]);
 
-                // Detect public methods on the component
+                // Detect public methods on the component (simple signature analysis)
                 $componentMethods = $this->getComponentMethods($component);
-                \Log::info('[Duo] Component methods detected', ['methods' => $componentMethods]);
+                \Log::info('[Duo] Component methods detected', ['count' => count($componentMethods)]);
 
                 // Replace wire:model with x-model for Alpine
                 $html = preg_replace(
@@ -140,7 +153,7 @@ final class DuoServiceProvider extends ServiceProvider
                 $alpineDataJson = json_encode($allData);
 
                 // Generate Alpine method implementations
-                $alpineMethods = $this->generateAlpineMethods($componentMethods, $allData);
+                $alpineMethods = $this->generateAlpineMethods($componentMethods, $allData, $renderQueries);
 
                 // Build the x-data object by combining data properties and methods
                 // We'll build it as a proper JavaScript object instead of using spread
@@ -152,8 +165,33 @@ final class DuoServiceProvider extends ServiceProvider
 
                 // Inject Duo sync methods and component methods directly into x-data
                 // This gives the component access to its reactive data via 'this'
+                // Note: $alpineMethods now includes duoSync() with proper sorting
                 $xDataContent = '{
                     ' . $dataPropertiesString . ',
+                    timeAgo(dateString) {
+                        const date = new Date(dateString);
+                        const now = new Date();
+                        const seconds = Math.floor((now - date) / 1000);
+
+                        const intervals = {
+                            year: 31536000,
+                            month: 2592000,
+                            week: 604800,
+                            day: 86400,
+                            hour: 3600,
+                            minute: 60,
+                            second: 1
+                        };
+
+                        for (const [unit, secondsInUnit] of Object.entries(intervals)) {
+                            const interval = Math.floor(seconds / secondsInUnit);
+                            if (interval >= 1) {
+                                return interval === 1 ? `1 ${unit} ago` : `${interval} ${unit}s ago`;
+                            }
+                        }
+
+                        return \'just now\';
+                    },
                     ' . $alpineMethods . '
                     async syncServerToIndexedDB() {
                         try {
@@ -161,16 +199,22 @@ final class DuoServiceProvider extends ServiceProvider
 
                             // Wait for window.duo to be available (with timeout)
                             let attempts = 0;
-                            while (!window.duo && attempts < 50) {
+                            const maxAttempts = 100; // 10 seconds total
+                            while (!window.duo && attempts < maxAttempts) {
                                 await new Promise(resolve => setTimeout(resolve, 100));
                                 attempts++;
+                                if (attempts % 10 === 0) {
+                                    console.log(\'[Duo] Still waiting for window.duo...\', attempts, \'/\', maxAttempts);
+                                }
                             }
 
                             // Sync initial server data to IndexedDB (server is source of truth on load)
                             if (!window.duo) {
-                                console.warn(\'[Duo] window.duo not available after waiting\');
+                                console.error(\'[Duo] window.duo not available after\', maxAttempts * 100, \'ms\');
                                 return;
                             }
+
+                            console.log(\'[Duo] window.duo is available!\');
 
                             const db = window.duo.getDatabase();
                             if (!db) {
@@ -207,17 +251,6 @@ final class DuoServiceProvider extends ServiceProvider
                         } catch (error) {
                             console.error(\'[Duo] Error syncing server data to IndexedDB:\', error);
                         }
-                    },
-                    async duoSync() {
-                        // Load from IndexedDB to component
-                        if (!window.duo) return;
-                        const db = window.duo.getDatabase();
-                        if (!db) return;
-                        const store = db.getStore(\'App_Models_Todo\');
-                        if (!store) return;
-                        const items = await store.toArray();
-                        console.log(\'[Duo] Loading\', items.length, \'items from IndexedDB\');
-                        this.todos = items;
                     },
                     async init() {
                         console.log(\'[Duo] Component init() called\');
@@ -422,9 +455,10 @@ final class DuoServiceProvider extends ServiceProvider
         );
 
         // 4. Transform {{ $todo->created_at->diffForHumans() }} FIRST (before general property transform)
+        // Handle any date field with diffForHumans()
         $template = preg_replace(
-            '/\{\{\s*\$' . $itemVarName . '->created_at->diffForHumans\(\)\s*\}\}/',
-            '<span x-text="new Date(' . $itemVarName . '.created_at).toLocaleString()"></span>',
+            '/\{\{\s*\$' . $itemVarName . '->(\w+)->diffForHumans\(\)\s*\}\}/',
+            '<span x-text="timeAgo(' . $itemVarName . '.$1)"></span>',
             $template
         );
 
@@ -519,11 +553,11 @@ final class DuoServiceProvider extends ServiceProvider
             return false;
         }
 
-        return in_array(Concerns\Syncable::class, class_uses_recursive($class), true);
+        return in_array(Syncable::class, class_uses_recursive($class), true);
     }
 
     /**
-     * Get public methods from the Livewire component (excluding lifecycle methods).
+     * Get public methods from the Livewire component (simple signature analysis).
      */
     protected function getComponentMethods($component): array
     {
@@ -558,9 +592,173 @@ final class DuoServiceProvider extends ServiceProvider
     }
 
     /**
+     * Capture SQL queries executed by a method.
+     */
+    protected function captureMethodQueries($component, string $methodName, array $parameters, array $componentData): array
+    {
+        try {
+            // Enable query logging
+            \DB::enableQueryLog();
+            \DB::flushQueryLog();
+
+            // Try to execute the method in a transaction we'll roll back
+            \DB::beginTransaction();
+
+            try {
+                // Prepare dummy arguments based on parameter types
+                $args = [];
+                foreach ($parameters as $param) {
+                    if ($param->hasType() && $param->getType()->getName() === 'int') {
+                        $args[] = 999999; // Dummy ID that won't exist
+                    } elseif ($param->hasType() && $param->getType()->getName() === 'string') {
+                        $args[] = 'dummy_string';
+                    } else {
+                        $args[] = null;
+                    }
+                }
+
+                // For methods without parameters, set component properties to dummy values
+                if (empty($args)) {
+                    // Clone component to avoid modifying the real one
+                    $testComponent = clone $component;
+
+                    // Set dummy values for properties that look like form inputs
+                    foreach ($componentData as $key => $value) {
+                        if (str_starts_with($key, 'new')) {
+                            $testComponent->$key = 'dummy_value';
+                        }
+                    }
+
+                    $testComponent->$methodName(...$args);
+                } else {
+                    // Call with dummy args
+                    $testComponent = clone $component;
+                    $testComponent->$methodName(...$args);
+                }
+            } catch (\Exception $e) {
+                // Expected to fail, we just want to capture queries
+                \Log::info("[Duo] Method $methodName threw exception (expected): " . $e->getMessage());
+            }
+
+            // Always rollback
+            \DB::rollBack();
+
+            // Get the queries
+            $queries = \DB::getQueryLog();
+            \Log::info("[Duo] Captured queries for $methodName", ['queries' => $queries]);
+
+            return $queries;
+
+        } catch (\Exception $e) {
+            \Log::error("[Duo] Failed to capture queries for $methodName: " . $e->getMessage());
+            return [];
+        } finally {
+            // Ensure we're not in a transaction
+            if (\DB::transactionLevel() > 0) {
+                \DB::rollBack();
+            }
+        }
+    }
+
+    /**
+     * Capture SQL queries from the render method.
+     */
+    protected function captureRenderQueries($component): array
+    {
+        try {
+            \DB::enableQueryLog();
+            \DB::flushQueryLog();
+
+            // Call render method
+            $component->render();
+
+            $queries = \DB::getQueryLog();
+            return $queries;
+        } catch (\Exception $e) {
+            \Log::error("[Duo] Failed to capture render queries: " . $e->getMessage());
+            return [];
+        }
+    }
+
+    /**
+     * Extract ORDER BY clause from SQL query.
+     */
+    protected function extractOrderBy(array $queries): ?array
+    {
+        foreach ($queries as $query) {
+            $sql = $query['query'];
+
+            // Look for ORDER BY clause: order by `created_at` desc OR "created_at" desc
+            if (preg_match('/order\s+by\s+[`"]?(\w+)[`"]?\s+(asc|desc)/i', $sql, $matches)) {
+                return [
+                    'column' => $matches[1],
+                    'direction' => strtolower($matches[2])
+                ];
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Parse SQL queries to determine the primary operation type.
+     */
+    protected function parseQueriesForOperation(array $queries): string
+    {
+        $hasInsert = false;
+        $hasUpdate = false;
+        $hasDelete = false;
+        $hasSelect = false;
+
+        foreach ($queries as $query) {
+            $sql = strtolower($query['query']);
+
+            if (str_starts_with($sql, 'insert')) {
+                $hasInsert = true;
+            } elseif (str_starts_with($sql, 'update')) {
+                $hasUpdate = true;
+            } elseif (str_starts_with($sql, 'delete')) {
+                $hasDelete = true;
+            } elseif (str_starts_with($sql, 'select')) {
+                $hasSelect = true;
+            }
+        }
+
+        // Determine primary operation
+        if ($hasInsert) return 'insert';
+        if ($hasUpdate) return 'update';
+        if ($hasDelete) return 'delete';
+        if ($hasSelect) return 'select';
+
+        return 'unknown';
+    }
+
+    /**
+     * Extract columns being inserted/updated from SQL query.
+     */
+    protected function extractColumnsFromQuery(string $sql, array $bindings): array
+    {
+        $columns = [];
+
+        // Parse INSERT query: insert into `todos` (`title`, `description`, `completed`, ...)
+        if (preg_match('/insert\s+into\s+`?\w+`?\s*\(([^)]+)\)/i', $sql, $matches)) {
+            $columnList = $matches[1];
+            $columnList = str_replace(['`', ' '], '', $columnList);
+            $columns = explode(',', $columnList);
+        }
+
+        // Parse UPDATE query: update `todos` set `title` = ?, `completed` = ?
+        elseif (preg_match_all('/`?(\w+)`?\s*=\s*\?/i', $sql, $matches)) {
+            $columns = $matches[1];
+        }
+
+        return $columns;
+    }
+
+    /**
      * Generate Alpine method implementations for Livewire methods.
      */
-    protected function generateAlpineMethods(array $methods, array $data): string
+    protected function generateAlpineMethods(array $methods, array $data, array $renderQueries = []): string
     {
         if (empty($methods)) {
             return '';
@@ -568,14 +766,20 @@ final class DuoServiceProvider extends ServiceProvider
 
         // Determine the store name from the data
         $storeName = 'App_Models_Todo'; // Default for now
+        $dataKey = 'todos'; // Default
         foreach ($data as $key => $value) {
             if (is_array($value) || (is_object($value) && method_exists($value, 'toArray'))) {
+                $dataKey = $key;
                 // Assume the key is plural, convert to singular and capitalize
                 $singular = rtrim($key, 's');
                 $storeName = 'App_Models_' . ucfirst($singular);
                 break;
             }
         }
+
+        // Extract ORDER BY from render queries
+        $orderBy = $this->extractOrderBy($renderQueries);
+        \Log::info('[Duo] Extracted ORDER BY', ['orderBy' => $orderBy]);
 
         $alpineMethods = '';
 
@@ -590,7 +794,7 @@ final class DuoServiceProvider extends ServiceProvider
             }
             $paramString = implode(', ', $paramList);
 
-            // Generate method based on naming convention
+            // Determine operation based on method naming convention
             if (str_starts_with($methodName, 'add') || str_starts_with($methodName, 'create')) {
                 // CREATE operation
                 $alpineMethods .= "async {$methodName}({$paramString}) {
@@ -603,8 +807,9 @@ final class DuoServiceProvider extends ServiceProvider
                         }
 
                         const db = window.duo.getDatabase();
+                        const syncQueue = window.duo.getSyncQueue();
                         const store = db.getStore('{$storeName}');
-                        if (!store) return;
+                        if (!store || !syncQueue) return;
 
                         const newItem = {
                             id: Date.now(),
@@ -613,17 +818,25 @@ final class DuoServiceProvider extends ServiceProvider
                             completed: false,
                             created_at: new Date().toISOString(),
                             updated_at: new Date().toISOString(),
-                            _duo_pending_sync: true,
                         };
 
-                        await store.put(newItem);
-                        console.log('[Duo] Created item in IndexedDB:', newItem);
+                        // Optimistically add to IndexedDB
+                        await store.put({ ...newItem, _duo_pending_sync: true });
+                        console.log('[Duo] Created item locally:', newItem);
+
+                        // Enqueue for background sync
+                        await syncQueue.enqueue({
+                            storeName: '{$storeName}',
+                            operation: 'create',
+                            data: newItem
+                        });
+                        console.log('[Duo] Enqueued create operation for background sync');
 
                         // Reset form fields
                         this.newTodoTitle = '';
                         this.newTodoDescription = '';
 
-                        // Refresh UI
+                        // Refresh UI immediately (optimistic update)
                         await this.duoSync();
                     },\n";
             } elseif (str_starts_with($methodName, 'toggle') || str_starts_with($methodName, 'update')) {
@@ -631,22 +844,32 @@ final class DuoServiceProvider extends ServiceProvider
                 $alpineMethods .= "async {$methodName}({$paramString}) {
                         if (!window.duo) return;
                         const db = window.duo.getDatabase();
+                        const syncQueue = window.duo.getSyncQueue();
                         const store = db.getStore('{$storeName}');
-                        if (!store) return;
+                        if (!store || !syncQueue) return;
 
                         const item = await store.get({$paramString});
                         if (!item) return;
 
-                        await store.put({
+                        const updatedItem = {
                             ...item,
                             completed: !item.completed,
                             updated_at: new Date().toISOString(),
-                            _duo_pending_sync: true,
+                        };
+
+                        // Optimistically update in IndexedDB
+                        await store.put({ ...updatedItem, _duo_pending_sync: true });
+                        console.log('[Duo] Updated item locally:', {$paramString});
+
+                        // Enqueue for background sync
+                        await syncQueue.enqueue({
+                            storeName: '{$storeName}',
+                            operation: 'update',
+                            data: updatedItem
                         });
+                        console.log('[Duo] Enqueued update operation for background sync');
 
-                        console.log('[Duo] Updated item in IndexedDB:', {$paramString});
-
-                        // Refresh UI
+                        // Refresh UI immediately (optimistic update)
                         await this.duoSync();
                     },\n";
             } elseif (str_starts_with($methodName, 'delete') || str_starts_with($methodName, 'remove')) {
@@ -654,17 +877,59 @@ final class DuoServiceProvider extends ServiceProvider
                 $alpineMethods .= "async {$methodName}({$paramString}) {
                         if (!window.duo) return;
                         const db = window.duo.getDatabase();
+                        const syncQueue = window.duo.getSyncQueue();
                         const store = db.getStore('{$storeName}');
-                        if (!store) return;
+                        if (!store || !syncQueue) return;
 
+                        // Get the item before deleting (need it for sync)
+                        const item = await store.get({$paramString});
+                        if (!item) return;
+
+                        // Optimistically delete from IndexedDB
                         await store.delete({$paramString});
-                        console.log('[Duo] Deleted item from IndexedDB:', {$paramString});
+                        console.log('[Duo] Deleted item locally:', {$paramString});
 
-                        // Refresh UI
+                        // Enqueue for background sync
+                        await syncQueue.enqueue({
+                            storeName: '{$storeName}',
+                            operation: 'delete',
+                            data: item
+                        });
+                        console.log('[Duo] Enqueued delete operation for background sync');
+
+                        // Refresh UI immediately (optimistic update)
                         await this.duoSync();
                     },\n";
             }
         }
+
+        // Add duoSync() method at the end with proper sorting
+        $sortCode = '';
+        if ($orderBy) {
+            $sortCode = "
+                        // Sort items based on ORDER BY from SQL
+                        items = items.sort((a, b) => {
+                            const aVal = a['{$orderBy['column']}'];
+                            const bVal = b['{$orderBy['column']}'];
+                            if (aVal < bVal) return " . ($orderBy['direction'] === 'asc' ? '-1' : '1') . ";
+                            if (aVal > bVal) return " . ($orderBy['direction'] === 'asc' ? '1' : '-1') . ";
+                            return 0;
+                        });";
+        }
+
+        $alpineMethods .= "async duoSync() {
+                        // Load from IndexedDB to component
+                        if (!window.duo) return;
+                        const db = window.duo.getDatabase();
+                        if (!db) return;
+                        const store = db.getStore('{$storeName}');
+                        if (!store) return;
+                        let items = await store.toArray();
+                        console.log('[Duo] Loading', items.length, 'items from IndexedDB');
+                        {$sortCode}
+
+                        this.{$dataKey} = items;
+                    },\n";
 
         return $alpineMethods;
     }
