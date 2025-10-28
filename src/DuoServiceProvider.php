@@ -176,6 +176,8 @@ final class DuoServiceProvider extends ServiceProvider
                 // Note: $alpineMethods now includes duoSync() with proper sorting
                 $xDataContent = '{
                     ' . $dataPropertiesString . ',
+                    duoLoading: true,
+                    duoReady: false,
                     timeAgo(dateString) {
                         const date = new Date(dateString);
                         const now = new Date();
@@ -262,9 +264,16 @@ final class DuoServiceProvider extends ServiceProvider
                     },
                     async init() {
                         console.log(\'[Duo] Component init() called\');
+                        this.duoLoading = true;
+
                         // First sync server data to IndexedDB, then load it back
                         await this.syncServerToIndexedDB();
                         await this.duoSync();
+
+                        // Mark as ready (removes loading state)
+                        this.duoLoading = false;
+                        this.duoReady = true;
+
                         console.log(\'[Duo] Component initialization complete\');
                     }
                 }';
@@ -385,8 +394,11 @@ final class DuoServiceProvider extends ServiceProvider
         if (preg_match($containerPattern, $html, $containerMatch)) {
             \Log::info('[Duo] Found rendered container in HTML');
 
+            // Add x-cloak and x-show="duoReady" to the container div
+            $containerOpenTag = preg_replace('/^(<\w+)/', '$1 x-cloak x-show="duoReady"', $containerMatch[1]);
+
             // Build the Alpine x-for template
-            $replacement = $containerMatch[1] . "\n" .
+            $replacement = $containerOpenTag . "\n" .
                 "    <template x-for=\"{$itemVarName} in {$propName}\" :key=\"{$itemVarName}.id\">\n" .
                 "        " . trim($alpineTemplate) . "\n" .
                 "    </template>\n";
