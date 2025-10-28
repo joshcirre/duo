@@ -27,10 +27,33 @@ export class SyncQueue {
   private queue: SyncOperation[] = [];
   private isProcessing = false;
   private intervalId?: number;
+  private isOnline = navigator.onLine;
 
   constructor(db: DuoDatabase, config: SyncQueueConfig) {
     this.db = db;
     this.config = config;
+    this.setupOnlineDetection();
+  }
+
+  /**
+   * Setup online/offline detection
+   */
+  private setupOnlineDetection(): void {
+    window.addEventListener('online', () => {
+      this.isOnline = true;
+      if (this.config.debug) {
+        console.log('[Duo] Network online - resuming sync');
+      }
+      // Immediately try to process pending operations
+      this.processQueue();
+    });
+
+    window.addEventListener('offline', () => {
+      this.isOnline = false;
+      if (this.config.debug) {
+        console.log('[Duo] Network offline - pausing sync');
+      }
+    });
   }
 
   /**
@@ -105,6 +128,14 @@ export class SyncQueue {
    */
   private async processQueue(): Promise<void> {
     if (this.isProcessing || this.queue.length === 0) {
+      return;
+    }
+
+    // Skip sync if offline
+    if (!this.isOnline) {
+      if (this.config.debug) {
+        console.log('[Duo] Skipping sync - offline mode');
+      }
       return;
     }
 
@@ -199,18 +230,29 @@ export class SyncQueue {
    * Handle sync errors with retry logic
    */
   private handleSyncError(operation: SyncOperation, error: Error): void {
-    operation.retryCount++;
+    // Don't increment retry count for network errors (we'll retry when back online)
+    const isNetworkError = error.message.includes('Failed to fetch') ||
+                          error.message.includes('NetworkError') ||
+                          error.message.includes('Network request failed');
 
-    if (operation.retryCount >= this.config.maxRetries) {
+    if (!isNetworkError) {
+      operation.retryCount++;
+    }
+
+    if (operation.retryCount >= this.config.maxRetries && !isNetworkError) {
       console.error('[Duo] Max retries reached for operation:', operation, error);
       this.removeFromQueue(operation.id);
       this.config.onSyncError?.(operation, error);
     } else {
       if (this.config.debug) {
-        console.warn(
-          `[Duo] Sync failed (retry ${operation.retryCount}/${this.config.maxRetries}):`,
-          error
-        );
+        if (isNetworkError) {
+          console.log('[Duo] Network error - will retry when online:', error.message);
+        } else {
+          console.warn(
+            `[Duo] Sync failed (retry ${operation.retryCount}/${this.config.maxRetries}):`,
+            error
+          );
+        }
       }
     }
   }
@@ -331,5 +373,23 @@ export class SyncQueue {
    */
   getPendingOperations(): SyncOperation[] {
     return [...this.queue];
+  }
+
+  /**
+   * Get sync status
+   */
+  getSyncStatus(): { isOnline: boolean; pendingCount: number; isProcessing: boolean } {
+    return {
+      isOnline: this.isOnline,
+      pendingCount: this.queue.length,
+      isProcessing: this.isProcessing,
+    };
+  }
+
+  /**
+   * Check if online
+   */
+  isNetworkOnline(): boolean {
+    return this.isOnline;
   }
 }

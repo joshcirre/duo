@@ -41,6 +41,14 @@ final class DuoServiceProvider extends ServiceProvider
             __DIR__.'/../resources/js' => resource_path('js/vendor/duo'),
         ], 'duo-assets');
 
+        // Load views for Blade components
+        $this->loadViewsFrom(__DIR__.'/../resources/views', 'duo');
+
+        // Publish views
+        $this->publishes([
+            __DIR__.'/../resources/views' => resource_path('views/vendor/duo'),
+        ], 'duo-views');
+
         // Register commands
         if ($this->app->runningInConsole()) {
             $this->commands([
