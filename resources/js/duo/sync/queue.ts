@@ -187,6 +187,7 @@ export class SyncQueue {
         'X-Requested-With': 'XMLHttpRequest',
         'X-CSRF-TOKEN': this.getCsrfToken(),
       },
+      credentials: 'same-origin',
       body: operation.operation !== 'delete' ? JSON.stringify(operation.data) : undefined,
     });
 

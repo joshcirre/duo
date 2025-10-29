@@ -50,6 +50,7 @@ final class DuoServiceProvider extends ServiceProvider
         ], 'duo-views');
 
         // Note: Service worker is served dynamically via route (no publishing needed!)
+        // Note: Boost AI guidelines are automatically loaded from vendor directory (no publishing needed!)
 
         // Register commands
         if ($this->app->runningInConsole()) {
@@ -96,8 +97,13 @@ final class DuoServiceProvider extends ServiceProvider
         })->name('duo.service-worker');
 
         // API routes for sync
+        // Note: Using 'web' middleware instead of 'api' because:
+        // 1. This is a same-origin SPA, not a separate API client
+        // 2. Users are already authenticated via session (Fortify)
+        // 3. Session cookies persist across page refreshes (critical for offline-first)
+        // 4. CSRF protection already in place via X-CSRF-TOKEN header
         Route::prefix('api/duo')
-            ->middleware(['api'])
+            ->middleware(['web'])
             ->group(function () {
                 Route::get('{table}', [DuoSyncController::class, 'index']);
                 Route::get('{table}/{id}', [DuoSyncController::class, 'show']);

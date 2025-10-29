@@ -70,9 +70,16 @@ class DuoSyncController extends Controller
             $record = new $model;
             $record->fill($data);
 
-            // Add user_id if the model has a user relationship
-            // This bypasses $fillable for security-sensitive fields
-            if ($request->user() && method_exists($record, 'user')) {
+            // Check if model has a user relationship and requires authentication
+            if (method_exists($record, 'user')) {
+                if (! $request->user()) {
+                    return response()->json([
+                        'error' => 'Authentication required',
+                        'message' => 'This resource requires an authenticated user',
+                    ], 401);
+                }
+
+                // Add user_id - bypasses $fillable for security-sensitive fields
                 $record->user_id = $request->user()->id;
             }
 
