@@ -86,6 +86,9 @@ export class LivewireIntegration {
       }
 
       // For write operations, queue for sync
+      if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method) && this.config.autoSync) {
+        await this.handleWriteOperation(url, method, init?.body);
+      }
 
       return response;
     };
