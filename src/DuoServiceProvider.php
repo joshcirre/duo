@@ -81,9 +81,9 @@ final class DuoServiceProvider extends ServiceProvider
     {
         // Serve service worker dynamically from package (no publishing needed!)
         Route::get('duo-sw.js', function () {
-            $path = __DIR__ . '/../dist/public/duo-sw.js';
+            $path = __DIR__.'/../dist/public/duo-sw.js';
 
-            if (!file_exists($path)) {
+            if (! file_exists($path)) {
                 abort(404, 'Service worker file not found');
             }
 
@@ -125,10 +125,11 @@ final class DuoServiceProvider extends ServiceProvider
 
         // Hook into Livewire's render event to transform HTML for Duo components
         app(\Livewire\EventBus::class)->on('render', function ($component, $view, $properties) {
-            \Log::info('[Duo] Render event triggered for component: ' . get_class($component));
+            \Log::info('[Duo] Render event triggered for component: '.get_class($component));
             // Check if component uses WithDuo trait
             if (! in_array(\JoshCirre\Duo\WithDuo::class, class_uses_recursive($component))) {
                 \Log::info('[Duo] Component does NOT use WithDuo trait');
+
                 return null;
             }
 
@@ -140,12 +141,12 @@ final class DuoServiceProvider extends ServiceProvider
                 $allQueries = \DB::getQueryLog();
 
                 // Filter to just SELECT queries (render queries)
-                $renderQueries = array_filter($allQueries, function($q) {
+                $renderQueries = array_filter($allQueries, function ($q) {
                     return stripos($q['query'], 'select') === 0;
                 });
 
                 \Log::info('[Duo] Render queries', ['queries' => $renderQueries]);
-                \Log::info('[Duo] Finisher callback called with HTML length: ' . strlen($html));
+                \Log::info('[Duo] Finisher callback called with HTML length: '.strlen($html));
 
                 // Get view data (which includes 'todos')
                 $viewData = method_exists($view, 'getData') ? $view->getData() : [];
@@ -189,7 +190,7 @@ final class DuoServiceProvider extends ServiceProvider
                 // We'll build it as a proper JavaScript object instead of using spread
                 $dataProperties = [];
                 foreach ($allData as $key => $value) {
-                    $dataProperties[] = $key . ': ' . json_encode($value);
+                    $dataProperties[] = $key.': '.json_encode($value);
                 }
                 $dataPropertiesString = implode(",\n                    ", $dataProperties);
 
@@ -197,7 +198,7 @@ final class DuoServiceProvider extends ServiceProvider
                 // This gives the component access to its reactive data via 'this'
                 // Note: $alpineMethods now includes duoSync() with proper sorting
                 $xDataContent = '{
-                    ' . $dataPropertiesString . ',
+                    '.$dataPropertiesString.',
                     duoLoading: true,
                     duoReady: false,
                     timeAgo(dateString) {
@@ -224,7 +225,7 @@ final class DuoServiceProvider extends ServiceProvider
 
                         return \'just now\';
                     },
-                    ' . $alpineMethods . '
+                    '.$alpineMethods.'
                     async syncServerToIndexedDB() {
                         try {
                             console.log(\'[Duo] syncServerToIndexedDB started\');
@@ -303,7 +304,7 @@ final class DuoServiceProvider extends ServiceProvider
                 // Add duo-enabled and Alpine x-data to the root element
                 $html = preg_replace(
                     '/^(<[^>]+?)>/',
-                    '$1 data-duo-enabled="true" x-data="' . htmlspecialchars($xDataContent, ENT_QUOTES, 'UTF-8') . '">',
+                    '$1 data-duo-enabled="true" x-data="'.htmlspecialchars($xDataContent, ENT_QUOTES, 'UTF-8').'">',
                     $html,
                     1
                 );
@@ -324,21 +325,22 @@ final class DuoServiceProvider extends ServiceProvider
         \Log::info('[Duo] transformBladeLoopsToAlpine called', [
             'properties_count' => count($properties),
             'property_keys' => array_keys($properties),
-            'property_types' => array_map('gettype', $properties)
+            'property_types' => array_map('gettype', $properties),
         ]);
 
         // Get the Blade template path
         $bladePath = $view->getPath();
-        \Log::info('[Duo] Blade template path: ' . $bladePath);
+        \Log::info('[Duo] Blade template path: '.$bladePath);
 
-        if (!file_exists($bladePath)) {
+        if (! file_exists($bladePath)) {
             \Log::info('[Duo] Blade template file not found');
+
             return $html;
         }
 
         // Read the Blade template source
         $bladeSource = file_get_contents($bladePath);
-        \Log::info('[Duo] Blade source length: ' . strlen($bladeSource));
+        \Log::info('[Duo] Blade source length: '.strlen($bladeSource));
 
         // Find array properties (these are likely from forelse/foreach loops)
         // Note: Check for both arrays and Collections (Eloquent results)
@@ -350,7 +352,7 @@ final class DuoServiceProvider extends ServiceProvider
                 // Convert Collections to arrays
                 $arrayValue = is_array($value) ? $value : $value->toArray();
 
-                if (!empty($arrayValue)) {
+                if (! empty($arrayValue)) {
                     $arrayProperties[$key] = $arrayValue;
                 }
             }
@@ -360,6 +362,7 @@ final class DuoServiceProvider extends ServiceProvider
 
         if (empty($arrayProperties)) {
             \Log::info('[Duo] No array properties found - skipping transformation');
+
             return $html; // No arrays to transform
         }
 
@@ -382,10 +385,11 @@ final class DuoServiceProvider extends ServiceProvider
 
         // Find @forelse or @foreach block in Blade source
         // Pattern: @forelse($todos as $todo) ... @empty ... @endforelse
-        $foreachPattern = '/@(?:forelse|foreach)\(\$' . $propName . '\s+as\s+\$(\w+)\)(.*?)@(?:empty|endforelse)/s';
+        $foreachPattern = '/@(?:forelse|foreach)\(\$'.$propName.'\s+as\s+\$(\w+)\)(.*?)@(?:empty|endforelse)/s';
 
-        if (!preg_match($foreachPattern, $bladeSource, $bladeMatch)) {
-            \Log::info('[Duo] Could not find @forelse or @foreach for: ' . $propName);
+        if (! preg_match($foreachPattern, $bladeSource, $bladeMatch)) {
+            \Log::info('[Duo] Could not find @forelse or @foreach for: '.$propName);
+
             return $html;
         }
 
@@ -395,15 +399,15 @@ final class DuoServiceProvider extends ServiceProvider
         \Log::info('[Duo] Found Blade loop', [
             'propName' => $propName,
             'itemVarName' => $itemVarName,
-            'template_length' => strlen($bladeTemplate)
+            'template_length' => strlen($bladeTemplate),
         ]);
 
         // Find the @empty content
-        $emptyPattern = '/@(?:forelse|foreach)\(\$' . $propName . '\s+as\s+\$\w+\).*?@empty(.*?)@endforelse/s';
+        $emptyPattern = '/@(?:forelse|foreach)\(\$'.$propName.'\s+as\s+\$\w+\).*?@empty(.*?)@endforelse/s';
         $emptyContent = '';
         if (preg_match($emptyPattern, $bladeSource, $emptyMatch)) {
             $emptyContent = trim($emptyMatch[1]);
-            \Log::info('[Duo] Found @empty content, length: ' . strlen($emptyContent));
+            \Log::info('[Duo] Found @empty content, length: '.strlen($emptyContent));
         }
 
         // Find the rendered loop container in HTML (any div with space-y-* class or similar)
@@ -420,18 +424,18 @@ final class DuoServiceProvider extends ServiceProvider
             $containerOpenTag = preg_replace('/^(<\w+)/', '$1 x-cloak x-show="duoReady"', $containerMatch[1]);
 
             // Build the Alpine x-for template
-            $replacement = $containerOpenTag . "\n" .
-                "    <template x-for=\"{$itemVarName} in {$propName}\" :key=\"{$itemVarName}.id\">\n" .
-                "        " . trim($alpineTemplate) . "\n" .
+            $replacement = $containerOpenTag."\n".
+                "    <template x-for=\"{$itemVarName} in {$propName}\" :key=\"{$itemVarName}.id\">\n".
+                '        '.trim($alpineTemplate)."\n".
                 "    </template>\n";
 
             // Add empty state if we found @empty content
             if ($emptyContent) {
-                $replacement .= "    " . trim($emptyContent) . "\n";
+                $replacement .= '    '.trim($emptyContent)."\n";
                 // Add x-show to make it conditional
                 $replacement = str_replace(
                     trim($emptyContent),
-                    preg_replace('/^<(\w+)/', '<$1 x-show="!' . $propName . ' || ' . $propName . '.length === 0"', trim($emptyContent)),
+                    preg_replace('/^<(\w+)/', '<$1 x-show="!'.$propName.' || '.$propName.'.length === 0"', trim($emptyContent)),
                     $replacement
                 );
             }
@@ -459,22 +463,22 @@ final class DuoServiceProvider extends ServiceProvider
         // 0. Transform Alpine bindings that use Blade variables (e.g., :checked="$todo->completed")
         // This handles Flux components that already use Alpine syntax
         $template = preg_replace(
-            '/:(\w+)="\$' . $itemVarName . '->(\w+)"/i',
-            ':$1="' . $itemVarName . '.$2"',
+            '/:(\w+)="\$'.$itemVarName.'->(\w+)"/i',
+            ':$1="'.$itemVarName.'.$2"',
             $template
         );
 
         // 1. Transform wire:click="method({{ $todo->id }})" to Alpine @click with direct method call
         $template = preg_replace(
-            '/wire:click="(\w+)\(\{\{\s*\$' . $itemVarName . '->id\s*\}\}\)"/i',
-            '@click.prevent="$1(' . $itemVarName . '.id)"',
+            '/wire:click="(\w+)\(\{\{\s*\$'.$itemVarName.'->id\s*\}\}\)"/i',
+            '@click.prevent="$1('.$itemVarName.'.id)"',
             $template
         );
 
         // Also handle wire:submit with direct method call
         $template = preg_replace(
-            '/wire:submit(?:\.prevent)?="(\w+)\(\{\{\s*\$' . $itemVarName . '->id\s*\}\}\)"/i',
-            '@submit.prevent="$1(' . $itemVarName . '.id)"',
+            '/wire:submit(?:\.prevent)?="(\w+)\(\{\{\s*\$'.$itemVarName.'->id\s*\}\}\)"/i',
+            '@submit.prevent="$1('.$itemVarName.'.id)"',
             $template
         );
 
@@ -487,19 +491,20 @@ final class DuoServiceProvider extends ServiceProvider
 
         // 2. Transform {{ $todo->completed ? 'checked' : '' }} to :checked="todo.completed"
         $template = preg_replace(
-            '/\{\{\s*\$' . $itemVarName . '->completed\s*\?\s*[\'"]checked[\'"]\s*:\s*[\'"][\'"]\s*\}\}/',
-            ':checked="' . $itemVarName . '.completed"',
+            '/\{\{\s*\$'.$itemVarName.'->completed\s*\?\s*[\'"]checked[\'"]\s*:\s*[\'"][\'"]\s*\}\}/',
+            ':checked="'.$itemVarName.'.completed"',
             $template
         );
 
         // 3. Transform class="{{ $todo->completed ? 'classes' : '' }}" to :class
         $template = preg_replace_callback(
-            '/class="([^"]*)\{\{\s*\$' . $itemVarName . '->(\w+)\s*\?\s*[\'"]([^\'"]+)[\'"]\s*:\s*[\'"][\'"]\s*\}\}([^"]*)"/i',
+            '/class="([^"]*)\{\{\s*\$'.$itemVarName.'->(\w+)\s*\?\s*[\'"]([^\'"]+)[\'"]\s*:\s*[\'"][\'"]\s*\}\}([^"]*)"/i',
             function ($matches) use ($itemVarName) {
-                $staticClasses = trim($matches[1] . ' ' . $matches[4]);
+                $staticClasses = trim($matches[1].' '.$matches[4]);
                 $conditionalClasses = $matches[3];
                 $property = $matches[2];
-                return 'class="' . $staticClasses . '" :class="{ \'' . $conditionalClasses . '\': ' . $itemVarName . '.' . $property . ' }"';
+
+                return 'class="'.$staticClasses.'" :class="{ \''.$conditionalClasses.'\': '.$itemVarName.'.'.$property.' }"';
             },
             $template
         );
@@ -507,22 +512,22 @@ final class DuoServiceProvider extends ServiceProvider
         // 4. Transform {{ $todo->created_at->diffForHumans() }} FIRST (before general property transform)
         // Handle any date field with diffForHumans()
         $template = preg_replace(
-            '/\{\{\s*\$' . $itemVarName . '->(\w+)->diffForHumans\(\)\s*\}\}/',
-            '<span x-text="timeAgo(' . $itemVarName . '.$1)"></span>',
+            '/\{\{\s*\$'.$itemVarName.'->(\w+)->diffForHumans\(\)\s*\}\}/',
+            '<span x-text="timeAgo('.$itemVarName.'.$1)"></span>',
             $template
         );
 
         // 5. Transform {{ $todo->title }} to x-text="todo.title" (for text content)
         $template = preg_replace(
-            '/\{\{\s*\$' . $itemVarName . '->(\w+)\s*\}\}/',
-            '<span x-text="' . $itemVarName . '.$1"></span>',
+            '/\{\{\s*\$'.$itemVarName.'->(\w+)\s*\}\}/',
+            '<span x-text="'.$itemVarName.'.$1"></span>',
             $template
         );
 
         // 6. Transform @if($todo->description) to x-show="todo.description"
         $template = preg_replace(
-            '/@if\(\$' . $itemVarName . '->(\w+)\)(.*?)@endif/s',
-            '<template x-if="' . $itemVarName . '.$1">$2</template>',
+            '/@if\(\$'.$itemVarName.'->(\w+)\)(.*?)@endif/s',
+            '<template x-if="'.$itemVarName.'.$1">$2</template>',
             $template
         );
 
@@ -618,7 +623,7 @@ final class DuoServiceProvider extends ServiceProvider
         $excludedMethods = [
             'render', 'mount', 'hydrate', 'dehydrate', 'boot', 'booted',
             'updating', 'updated', 'rendering', 'rendered',
-            '__construct', '__get', '__set', '__call', '__toString'
+            '__construct', '__get', '__set', '__call', '__toString',
         ];
 
         foreach ($reflection->getMethods(\ReflectionMethod::IS_PUBLIC) as $method) {
@@ -687,7 +692,7 @@ final class DuoServiceProvider extends ServiceProvider
                 }
             } catch (\Exception $e) {
                 // Expected to fail, we just want to capture queries
-                \Log::info("[Duo] Method $methodName threw exception (expected): " . $e->getMessage());
+                \Log::info("[Duo] Method $methodName threw exception (expected): ".$e->getMessage());
             }
 
             // Always rollback
@@ -700,7 +705,8 @@ final class DuoServiceProvider extends ServiceProvider
             return $queries;
 
         } catch (\Exception $e) {
-            \Log::error("[Duo] Failed to capture queries for $methodName: " . $e->getMessage());
+            \Log::error("[Duo] Failed to capture queries for $methodName: ".$e->getMessage());
+
             return [];
         } finally {
             // Ensure we're not in a transaction
@@ -723,9 +729,11 @@ final class DuoServiceProvider extends ServiceProvider
             $component->render();
 
             $queries = \DB::getQueryLog();
+
             return $queries;
         } catch (\Exception $e) {
-            \Log::error("[Duo] Failed to capture render queries: " . $e->getMessage());
+            \Log::error('[Duo] Failed to capture render queries: '.$e->getMessage());
+
             return [];
         }
     }
@@ -742,7 +750,7 @@ final class DuoServiceProvider extends ServiceProvider
             if (preg_match('/order\s+by\s+[`"]?(\w+)[`"]?\s+(asc|desc)/i', $sql, $matches)) {
                 return [
                     'column' => $matches[1],
-                    'direction' => strtolower($matches[2])
+                    'direction' => strtolower($matches[2]),
                 ];
             }
         }
@@ -775,10 +783,18 @@ final class DuoServiceProvider extends ServiceProvider
         }
 
         // Determine primary operation
-        if ($hasInsert) return 'insert';
-        if ($hasUpdate) return 'update';
-        if ($hasDelete) return 'delete';
-        if ($hasSelect) return 'select';
+        if ($hasInsert) {
+            return 'insert';
+        }
+        if ($hasUpdate) {
+            return 'update';
+        }
+        if ($hasDelete) {
+            return 'delete';
+        }
+        if ($hasSelect) {
+            return 'select';
+        }
 
         return 'unknown';
     }
@@ -822,7 +838,7 @@ final class DuoServiceProvider extends ServiceProvider
                 $dataKey = $key;
                 // Assume the key is plural, convert to singular and capitalize
                 $singular = rtrim($key, 's');
-                $storeName = 'App_Models_' . ucfirst($singular);
+                $storeName = 'App_Models_'.ucfirst($singular);
                 break;
             }
         }
@@ -961,10 +977,10 @@ final class DuoServiceProvider extends ServiceProvider
                         items = items.sort((a, b) => {
                             const aVal = a['{$orderBy['column']}'];
                             const bVal = b['{$orderBy['column']}'];
-                            if (aVal < bVal) return " . ($orderBy['direction'] === 'asc' ? '-1' : '1') . ";
-                            if (aVal > bVal) return " . ($orderBy['direction'] === 'asc' ? '1' : '-1') . ";
+                            if (aVal < bVal) return ".($orderBy['direction'] === 'asc' ? '-1' : '1').';
+                            if (aVal > bVal) return '.($orderBy['direction'] === 'asc' ? '1' : '-1').';
                             return 0;
-                        });";
+                        });';
         }
 
         $alpineMethods .= "async duoSync() {
@@ -989,9 +1005,9 @@ final class DuoServiceProvider extends ServiceProvider
      */
     protected function registerBladeDirectives(): void
     {
-        // @duoMeta - Injects the cache meta tag for offline page caching
+        // @duoMeta - Injects the cache meta tag for offline page caching and CSRF token
         \Blade::directive('duoMeta', function () {
-            return '<?php echo \'<meta name="duo-cache" content="true" data-duo-version="1.0">\'; ?>';
+            return '<?php echo \'<meta name="csrf-token" content="\' . csrf_token() . \'">\' . "\n" . \'<meta name="duo-cache" content="true" data-duo-version="1.0">\'; ?>';
         });
     }
 }

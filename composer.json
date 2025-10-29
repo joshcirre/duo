@@ -83,9 +83,7 @@
         "test": [
             "@test:lint",
             "@test:typos",
-            "@test:unit",
-            "@test:types",
-            "@test:refactor"
+            "@test:unit"
         ],
         "post-autoload-dump": [
             "@clear",

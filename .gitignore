@@ -21,6 +21,10 @@ Thumbs.db
 coverage/
 .phpunit.result.cache
 
+# Static Analysis
+/build
+/.phpstan.cache
+
 # Environment
 .env
 .env.*

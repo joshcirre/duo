@@ -18,6 +18,5 @@ final class UseDuo
         public readonly ?string $syncStrategy = null,
         public readonly ?int $cacheTtl = null,
         public readonly bool $autoSync = true,
-    ) {
-    }
+    ) {}
 }

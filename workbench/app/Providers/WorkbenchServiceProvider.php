@@ -1,8 +1,9 @@
 <?php
 
+declare(strict_types=1);
+
 namespace Workbench\App\Providers;
 
-use Illuminate\Support\Facades\Route;
 use Illuminate\Support\ServiceProvider;
 use Livewire\Livewire;
 use Workbench\App\Livewire\TodoList;

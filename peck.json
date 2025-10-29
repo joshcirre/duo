@@ -1,0 +1,19 @@
+{
+    "preset": "laravel",
+    "ignore": {
+        "words": [
+            "php",
+            "roadmap",
+            "eslint",
+            "js",
+            "syncable",
+            "testbench",
+            "tsconfig",
+            "tsup",
+            "vitest",
+            "todos",
+            "cirre"
+        ],
+        "paths": []
+    }
+}
