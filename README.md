@@ -2,16 +2,125 @@
 
 **Local-first IndexedDB syncing for Laravel and Livewire applications.**
 
-Duo enables automatic client-side caching and synchronization of your Eloquent models using IndexedDB, providing a seamless offline-first experience for your Laravel/Livewire applications.
+Duo enables automatic client-side caching and synchronization of your Eloquent models using IndexedDB, providing a seamless offline-first experience for your Laravel/Livewire applications. Just add a trait to your Livewire component and Duo handles the rest—automatically transforming your server-side components to work with IndexedDB.
 
 ## Features
 
-- **Automatic IndexedDB Caching**: Transparently cache Eloquent models in the browser
-- **Write-Behind Sync**: Optimistic updates with background server synchronization
-- **Livewire Integration**: Seamless integration with Livewire 3+ components
-- **Type-Safe**: Full TypeScript support with generated types
-- **Zero Configuration**: Works out of the box with sensible defaults
-- **Offline Support**: Continue working offline, sync when reconnected
+- 🚀 **Zero Configuration**: Add one trait and Duo automatically transforms your Livewire components to Alpine.js
+- 💾 **Automatic IndexedDB Caching**: Transparently cache Eloquent models in the browser
+- ⚡ **Optimistic Updates**: Instant UI updates with background server synchronization
+- 🔄 **Offline Support**: Automatic offline detection with sync queue that resumes when back online
+- 📊 **Visual Sync Status**: Built-in component showing online/offline/syncing states
+- 🎯 **Livewire Integration**: Seamless integration with Livewire 3+ and Volt components
+- 📦 **Type-Safe**: Full TypeScript support with auto-generated types
+- 🔌 **Vite Plugin**: Automatic manifest generation with file watching
+
+## Local Development Setup
+
+Want to contribute or test Duo locally? Follow these steps to set up local development with symlinked packages.
+
+### 1. Clone and Install Duo
+
+```bash
+# Clone the Duo package repository
+git clone https://github.com/joshcirre/duo.git
+cd duo
+
+# Install PHP dependencies
+composer install
+
+# Install Node dependencies
+npm install
+
+# Build the package
+npm run build
+```
+
+### 2. Symlink Composer Package
+
+Link the Duo package to your local Laravel application:
+
+```bash
+# In your Laravel app directory (e.g., ~/Code/my-laravel-app)
+cd ~/Code/my-laravel-app
+
+# Add the local repository to composer.json
+composer config repositories.duo path ../duo
+
+# Require the package from the local path
+composer require joshcirre/duo:@dev
+```
+
+This creates a symlink in `vendor/joshcirre/duo` pointing to your local Duo directory. Changes to the PHP code are immediately reflected.
+
+### 3. Symlink NPM Package
+
+Link the Vite plugin to your Laravel application:
+
+```bash
+# In the Duo package directory
+cd ~/Code/duo
+npm link
+
+# In your Laravel app directory
+cd ~/Code/my-laravel-app
+npm link @joshcirre/vite-plugin-duo
+```
+
+Now your Laravel app uses the local version of the Vite plugin.
+
+### 4. Watch for Changes
+
+In the Duo package directory, run the build watcher:
+
+```bash
+cd ~/Code/duo
+npm run dev
+```
+
+This watches for TypeScript changes and rebuilds automatically. Changes are immediately available in your linked Laravel app.
+
+### 5. Test Your Changes
+
+In your Laravel app:
+
+```bash
+# Run Vite dev server
+npm run dev
+
+# In another terminal, run Laravel
+php artisan serve
+```
+
+Any changes you make to Duo's PHP or TypeScript code will be reflected immediately!
+
+### 6. Unlinking (When Done)
+
+To remove the symlinks:
+
+```bash
+# Unlink npm package (in your Laravel app)
+cd ~/Code/my-laravel-app
+npm unlink @joshcirre/vite-plugin-duo
+
+# Unlink composer package
+composer config repositories.duo --unset
+composer require joshcirre/duo  # Reinstall from Packagist
+
+# Unlink from Duo directory
+cd ~/Code/duo
+npm unlink
+```
+
+### Development Tips
+
+- **PHP Changes**: Automatically picked up via symlink
+- **TypeScript Changes**: Require `npm run build` or `npm run dev` (watch mode)
+- **View Changes**: Blade components update automatically
+- **Config Changes**: May require `php artisan optimize:clear`
+- **Manifest Changes**: Run `php artisan duo:generate` manually if needed
+
+---
 
 ## Installation
 
@@ -31,30 +140,22 @@ npm install -D @joshcirre/vite-plugin-duo
 
 ## Quick Start
 
-### 1. Add the Trait to Your Models
+### 1. Add the Syncable Trait to Your Models
+
+Add the `Syncable` trait to any Eloquent model you want to cache in IndexedDB:
 
 ```php
-use JoshCirre\Duo\Concerns\Syncable;
+use JoshCirre\Duo\Syncable;
 
-class Post extends Model
+class Todo extends Model
 {
     use Syncable;
 
-    protected $fillable = ['title', 'content'];
+    protected $fillable = ['title', 'description', 'completed'];
 }
 ```
 
-Or use the attribute:
-
-```php
-use JoshCirre\Duo\Attributes\UseDuo;
-
-#[UseDuo]
-class Post extends Model
-{
-    protected $fillable = ['title', 'content'];
-}
-```
+This tells Duo which models to include in the auto-generated manifest.
 
 ### 2. Configure Vite
 
@@ -71,43 +172,224 @@ export default defineConfig({
             input: ['resources/css/app.css', 'resources/js/app.js'],
             refresh: true,
         }),
-        duo(),  // That's it! Duo will auto-generate the manifest
+        duo({
+            manifestPath: 'resources/js/duo/manifest.json',
+            watch: true,  // Auto-regenerate manifest on file changes
+            autoGenerate: true,
+            patterns: [
+                'app/Models/**/*.php',
+                'resources/views/livewire/**/*.php',  // Volt components
+                'app/Livewire/**/*.php',              // Class-based components
+            ],
+        }),
     ],
 });
 ```
 
 ### 3. Initialize in Your JavaScript
 
+In your `resources/js/app.js`:
+
 ```javascript
 import { initializeDuo } from '@joshcirre/vite-plugin-duo/client';
 import manifest from 'virtual:duo-manifest';
 
-// Initialize Duo when your app loads
-initializeDuo({
-    manifest,
-    debug: import.meta.env.DEV,
-    syncInterval: 5000,
-    maxRetries: 3,
-});
+(async () => {
+    try {
+        await initializeDuo({
+            manifest,
+            debug: import.meta.env.DEV,
+            syncInterval: 5000,  // Background sync interval in milliseconds
+            maxRetries: 3,       // Max retry attempts for failed syncs
+        });
+        console.log('Duo initialized successfully');
+    } catch (error) {
+        console.error('[Duo] Initialization failed:', error);
+    }
+})();
 ```
 
-### 4. Build Your Assets
+### 4. Add the WithDuo Trait to Your Livewire Components
+
+This is where the magic happens! Add the `WithDuo` trait to any Livewire component and Duo will automatically transform it to use IndexedDB:
+
+**Volt Component Example:**
+
+```php
+<?php
+use Livewire\Volt\Component;
+use App\Models\Todo;
+use JoshCirre\Duo\WithDuo;
+
+new class extends Component {
+    use WithDuo;  // ✨ This is all you need!
+
+    public string $newTodoTitle = '';
+
+    public function addTodo()
+    {
+        Todo::create(['title' => $this->newTodoTitle]);
+        $this->reset('newTodoTitle');
+    }
+
+    public function toggleTodo($id)
+    {
+        $todo = Todo::findOrFail($id);
+        $todo->update(['completed' => !$todo->completed]);
+    }
+
+    public function deleteTodo($id)
+    {
+        Todo::findOrFail($id)->delete();
+    }
+
+    public function with()
+    {
+        return ['todos' => Todo::latest()->get()];
+    }
+}; ?>
+
+<div>
+    <form wire:submit="addTodo">
+        <input type="text" wire:model="newTodoTitle" placeholder="New todo...">
+        <button type="submit">Add</button>
+    </form>
+
+    <div class="space-y-2">
+        @forelse($todos as $todo)
+            <div>
+                <input
+                    type="checkbox"
+                    wire:click="toggleTodo({{ $todo->id }})"
+                    {{ $todo->completed ? 'checked' : '' }}
+                >
+                <span>{{ $todo->title }}</span>
+                <button wire:click="deleteTodo({{ $todo->id }})">Delete</button>
+            </div>
+        @empty
+            <p>No todos yet</p>
+        @endforelse
+    </div>
+</div>
+```
+
+**Class-Based Component Example:**
+
+```php
+<?php
+
+namespace App\Livewire;
+
+use Livewire\Component;
+use App\Models\Todo;
+use JoshCirre\Duo\WithDuo;
+
+class TodoList extends Component
+{
+    use WithDuo;  // ✨ Add this trait
+
+    public string $newTodoTitle = '';
+
+    public function addTodo()
+    {
+        Todo::create(['title' => $this->newTodoTitle]);
+        $this->reset('newTodoTitle');
+    }
+
+    public function render()
+    {
+        return view('livewire.todo-list', [
+            'todos' => Todo::latest()->get(),
+        ]);
+    }
+}
+```
+
+**What Happens Automatically:**
+
+When you add the `WithDuo` trait, Duo will:
+1. ✅ Transform `wire:click` to Alpine.js `@click` handlers
+2. ✅ Convert `@forelse` loops to Alpine `x-for` templates
+3. ✅ Transform `{{ $todo->property }}` to `x-text` bindings
+4. ✅ Convert conditional classes to `:class` bindings
+5. ✅ Add `x-cloak` and loading state management
+6. ✅ Route all data operations through IndexedDB
+7. ✅ Queue changes for background sync to the server
+
+### 5. Add the Sync Status Component (Optional)
+
+Display a visual indicator of the sync status:
+
+```blade
+<x-duo::sync-status position="top-right" />
+```
+
+This component shows:
+- 🟠 **Offline**: "You're offline - Changes saved locally"
+- 🔵 **Syncing**: "Syncing X changes..."
+- 🟢 **Synced**: "All changes synced"
+
+### 6. Build Your Assets
 
 ```bash
-npm run build
-# or for development
 npm run dev
 ```
 
-The Vite plugin will automatically run `php artisan duo:generate` and create the manifest!
+The Vite plugin will automatically:
+- Run `php artisan duo:generate` to create the manifest
+- Watch for model and component changes
+- Regenerate the manifest when files change
 
 ## How It Works
 
-1. **Read-First Strategy**: When your Livewire components request data, Duo checks IndexedDB first
-2. **Fallback to Server**: If data isn't cached, Duo fetches from the server and caches it
-3. **Write-Behind Sync**: Changes are written to IndexedDB immediately, then queued for server sync
-4. **Background Sync**: Pending changes sync to the server in the background
-5. **Conflict Resolution**: Server responses update the local cache
+Duo uses a sophisticated local-first architecture that transforms your Livewire components into offline-capable Alpine.js applications:
+
+### Initial Load
+
+1. **Component Transformation**: When a component with the `WithDuo` trait renders, Duo intercepts the HTML and transforms it:
+   - Blade `@forelse` loops → Alpine `x-for` templates
+   - `wire:click` handlers → Alpine `@click` with IndexedDB operations
+   - `{{ $model->property }}` → `<span x-text="model.property"></span>`
+   - Conditional classes → `:class` bindings
+   - Adds loading states and `x-cloak` for smooth initialization
+
+2. **Sync Server Data**: On page load, the Alpine component syncs server data to IndexedDB
+3. **Ready State**: Component shows with `duoReady` flag set to true
+
+### Data Operations
+
+**Reads:**
+- All data is read from IndexedDB (instant, no network delay)
+- Alpine templates reactively update from the local cache
+
+**Writes:**
+- Changes write to IndexedDB immediately (optimistic update)
+- UI updates instantly
+- Operation queues for background server sync
+- Sync happens automatically in the background
+
+### Offline Support
+
+**Going Offline:**
+1. Browser's `navigator.onLine` API detects offline state
+2. Sync queue automatically pauses
+3. All operations continue to work locally
+4. Sync status component shows orange "Offline" badge
+
+**Coming Back Online:**
+1. Browser detects connection restored
+2. Sync queue automatically resumes
+3. All queued operations sync to server
+4. Network errors don't count against retry limit
+5. Sync status shows progress, then green "Synced" when complete
+
+### Background Sync
+
+- Runs on configurable interval (default: 5 seconds)
+- Processes queued operations in order
+- Retries failed operations (default: 3 attempts)
+- Updates local cache with server responses
+- Handles concurrent operations safely
 
 ## Configuration
 
@@ -159,17 +441,42 @@ await postsStore.put({
 await postsStore.delete(1);
 ```
 
-### Manual Sync
+### Manual Sync Operations
 
 ```javascript
 const duo = getDuo();
 const syncQueue = duo.getSyncQueue();
 
-// Check queue size
-console.log('Pending syncs:', syncQueue.getQueueSize());
+// Check sync status
+const status = syncQueue.getSyncStatus();
+console.log('Online:', status.isOnline);
+console.log('Pending:', status.pendingCount);
+console.log('Processing:', status.isProcessing);
+
+// Check if online
+const isOnline = syncQueue.isNetworkOnline();
 
 // Get pending operations
 const pending = syncQueue.getPendingOperations();
+
+// Force sync now
+await syncQueue.processQueue();
+```
+
+### Access Sync Status in Custom Components
+
+```javascript
+// In Alpine component
+x-data="{
+    duoStatus: { isOnline: true, pendingCount: 0, isProcessing: false },
+    init() {
+        setInterval(() => {
+            if (window.duo && window.duo.getSyncQueue()) {
+                this.duoStatus = window.duo.getSyncQueue().getSyncStatus();
+            }
+        }, 1000);
+    }
+}"
 ```
 
 ### Clear Cache
@@ -177,6 +484,33 @@ const pending = syncQueue.getPendingOperations();
 ```javascript
 const duo = getDuo();
 await duo.clearCache();
+```
+
+### Custom Sync Component
+
+You can build your own sync indicator using the sync status API:
+
+```blade
+<div x-data="{
+    status: { isOnline: true, pendingCount: 0 },
+    init() {
+        setInterval(() => {
+            if (window.duo?.getSyncQueue()) {
+                this.status = window.duo.getSyncQueue().getSyncStatus();
+            }
+        }, 1000);
+    }
+}">
+    <span x-show="!status.isOnline" class="text-orange-600">
+        Offline
+    </span>
+    <span x-show="status.isOnline && status.pendingCount > 0" class="text-blue-600">
+        Syncing <span x-text="status.pendingCount"></span> changes
+    </span>
+    <span x-show="status.isOnline && status.pendingCount === 0" class="text-green-600">
+        Synced
+    </span>
+</div>
 ```
 
 ## Artisan Commands
@@ -187,21 +521,136 @@ await duo.clearCache();
 php artisan duo:discover
 ```
 
-Lists all models using the Duo trait.
+Lists all Eloquent models using the `Syncable` trait. Useful for verifying which models will be included in the manifest.
 
 ### Generate Manifest
 
 ```bash
-php artisan duo:generate --path=resources/js/duo
+php artisan duo:generate
 ```
 
-Generates the IndexedDB schema manifest from your models.
+Generates the `manifest.json` file with IndexedDB schema from your models. The Vite plugin runs this automatically, but you can run it manually:
+
+```bash
+# Generate with custom path
+php artisan duo:generate --path=resources/js/duo
+
+# Force regeneration
+php artisan duo:generate --force
+```
+
+**Note:** The Vite plugin with `watch: true` automatically regenerates the manifest when model files change, so you rarely need to run this manually.
+
+## Troubleshooting
+
+### Component Not Transforming
+
+If your Livewire component isn't being transformed to Alpine:
+
+1. **Check the trait is present:**
+   ```php
+   use JoshCirre\Duo\WithDuo;
+
+   class MyComponent extends Component {
+       use WithDuo;  // Make sure this is here
+   }
+   ```
+
+2. **Clear caches:**
+   ```bash
+   php artisan optimize:clear
+   composer dump-autoload
+   ```
+
+3. **Check Laravel logs:**
+   ```bash
+   tail -f storage/logs/laravel.log | grep Duo
+   ```
+
+### "window.duo not available"
+
+If you see this error in the console:
+
+1. **Check Duo is initialized:**
+   - Verify `initializeDuo()` is called in `app.js`
+   - Check the manifest is imported: `import manifest from 'virtual:duo-manifest'`
+
+2. **Regenerate the manifest:**
+   ```bash
+   php artisan duo:generate
+   npm run build
+   ```
+
+3. **Check Vite is running:**
+   ```bash
+   npm run dev
+   ```
+
+### Data Not Syncing
+
+If changes aren't syncing to the server:
+
+1. **Check the browser console** for sync errors
+2. **Check sync queue status:**
+   ```javascript
+   console.log(window.duo.getSyncQueue().getSyncStatus());
+   ```
+3. **Verify routes are registered** - Duo registers routes at `/duo/sync`
+4. **Check network tab** in DevTools for failed requests
+
+### Changes Not Persisting
+
+If changes disappear after refresh:
+
+1. **Check IndexedDB** in Browser DevTools → Application → IndexedDB
+2. **Verify the model has `Syncable` trait**
+3. **Check server logs** for save errors
+4. **Clear IndexedDB and resync:**
+   ```javascript
+   await window.duo.clearCache();
+   location.reload();
+   ```
+
+## FAQ
+
+### Do I need to change my Livewire components?
+
+**No!** Just add the `WithDuo` trait. Your existing Blade templates and Livewire methods work as-is. Duo automatically transforms them to use IndexedDB and Alpine.js.
+
+### Will this work with Volt components?
+
+**Yes!** Duo works seamlessly with both class-based Livewire components and Volt single-file components.
+
+### What happens if JavaScript is disabled?
+
+Components without the `WithDuo` trait will continue to work as normal server-side Livewire components. Components with the trait require JavaScript for the IndexedDB functionality.
+
+### Can I use this with existing Alpine.js code?
+
+**Yes!** Duo generates Alpine.js-compatible code, so you can mix Duo-transformed components with regular Alpine components.
+
+### Does this replace Livewire?
+
+**No.** Duo enhances Livewire by adding local-first capabilities. The server is still the source of truth. Duo just caches data locally and provides offline support.
+
+### Can I use Flux components?
+
+**Partially.** Flux components work great for forms, buttons, and static UI elements. However, Flux components inside `@forelse` loops won't transform correctly since they're server-side components. Use plain HTML with Alpine bindings for loop items.
+
+### How do I handle conflicts?
+
+Duo uses a "server wins" strategy. When sync operations complete, the server response updates the local cache. This ensures the server remains the source of truth.
+
+### Can I customize the transformation?
+
+Currently, the transformation is automatic. Custom transformation logic is planned for a future release.
 
 ## Requirements
 
 - PHP ^8.2
 - Laravel ^11.0 or ^12.0
 - Livewire ^3.0
+- Alpine.js 3.x (included with Livewire)
 - Modern browser with IndexedDB support
 
 ## Browser Support
@@ -223,10 +672,26 @@ Created by [Josh Cirre](https://github.com/joshcirre)
 
 Built with:
 - [Dexie.js](https://dexie.org/) - Minimalistic IndexedDB wrapper
-- [Laravel](https://laravel.com/)
-- [Livewire](https://livewire.laravel.com/)
+- [Laravel](https://laravel.com/) - PHP framework
+- [Livewire](https://livewire.laravel.com/) - Full-stack framework
+- [Alpine.js](https://alpinejs.dev/) - Lightweight JavaScript framework
+- [Livewire Flux](https://flux.laravel.com/) - UI components (optional)
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+## Roadmap
+
+See [ROADMAP.md](ROADMAP.md) for planned features including:
+- Full page caching for complete offline mode
+- Seamless conflict resolution with visual components
+- Multiplayer mode ("Duet") with real-time sync
+- Permission-based conflict resolution
+- Architecture optimizations and Livewire v4 compatibility
 
 ## Support
 
 - [GitHub Issues](https://github.com/joshcirre/duo/issues)
 - [Documentation](https://github.com/joshcirre/duo/wiki)
+- [Discussions](https://github.com/joshcirre/duo/discussions)

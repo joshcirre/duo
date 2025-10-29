@@ -83,17 +83,19 @@ npm run lint
 duo/
 ├── config/                 # Laravel config file
 │   └── duo.php
-├── resources/js/duo/       # TypeScript client library
-│   ├── core/              # Core database logic
-│   ├── sync/              # Sync queue
-│   ├── livewire/          # Livewire integration
-│   └── index.ts           # Main entry point
+├── resources/
+│   ├── js/duo/            # TypeScript client library
+│   │   ├── core/          # Core database logic
+│   │   ├── sync/          # Sync queue
+│   │   ├── livewire/      # Livewire integration
+│   │   └── index.ts       # Main entry point
+│   └── views/components/  # Blade components (sync-status)
 ├── src/                   # PHP source code
-│   ├── Attributes/        # PHP attributes
 │   ├── Commands/          # Artisan commands
-│   ├── Concerns/          # Traits
-│   ├── DuoServiceProvider.php
-│   └── ModelRegistry.php
+│   ├── DuoServiceProvider.php  # Main service provider
+│   ├── ModelRegistry.php  # Model tracking
+│   ├── Syncable.php       # Model trait
+│   └── WithDuo.php        # Livewire component trait
 ├── vite-plugin/           # Vite plugin source
 │   └── src/
 │       └── index.ts
@@ -105,9 +107,10 @@ duo/
 
 ### PHP Side
 
-- **Syncable Trait**: Marks models for IndexedDB caching
+- **Syncable Trait** (`JoshCirre\Duo\Syncable`): Marks models for IndexedDB caching
+- **WithDuo Trait** (`JoshCirre\Duo\WithDuo`): Marks Livewire components for automatic transformation to Alpine.js
 - **ModelRegistry**: Tracks all models using Duo
-- **DuoServiceProvider**: Registers the package with Laravel
+- **DuoServiceProvider**: Registers the package with Laravel and transforms HTML
 - **Commands**: Artisan commands for discovery and manifest generation
 
 ### JavaScript Side
