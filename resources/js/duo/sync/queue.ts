@@ -191,7 +191,19 @@ export class SyncQueue {
     });
 
     if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      // Try to extract error message from response body
+      let errorMessage = response.statusText;
+      try {
+        const errorData = await response.json();
+        if (errorData.message) {
+          errorMessage = errorData.message;
+        } else if (errorData.error) {
+          errorMessage = errorData.error;
+        }
+      } catch {
+        // Ignore JSON parsing errors, use statusText
+      }
+      throw new Error(`HTTP ${response.status}: ${errorMessage}`);
     }
 
     // Handle server response for CREATE operations
