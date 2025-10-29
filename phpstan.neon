@@ -1,5 +1,13 @@
+includes:
+    - vendor/larastan/larastan/extension.neon
+
 parameters:
     level: 5
     paths:
         - src
     tmpDir: build/phpstan
+
+    # Ignore traits that are used in consuming applications
+    ignoreErrors:
+        - '#Trait JoshCirre\\Duo\\Syncable is used zero times#'
+        - '#Trait JoshCirre\\Duo\\WithDuo is used zero times#'

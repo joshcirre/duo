@@ -47,7 +47,12 @@ export class LivewireIntegration {
 
     window.fetch = async (...args) => {
       const [resource, init] = args;
-      const url = typeof resource === 'string' ? resource : (resource instanceof Request ? resource.url : resource.toString());
+      const url =
+        typeof resource === 'string'
+          ? resource
+          : resource instanceof Request
+            ? resource.url
+            : resource.toString();
 
       // Only intercept API requests
       if (!url.includes('/api/') && !url.includes('/livewire/')) {
@@ -81,9 +86,6 @@ export class LivewireIntegration {
       }
 
       // For write operations, queue for sync
-      if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(method) && this.config.autoSync) {
-        await this.handleWriteOperation(url, method, init?.body);
-      }
 
       return response;
     };
@@ -94,7 +96,10 @@ export class LivewireIntegration {
    */
   private setupLivewireHooks(): void {
     if (this.config.debug) {
-      console.log('[Duo] Setting up Livewire hooks, Livewire available:', typeof window.Livewire !== 'undefined');
+      console.log(
+        '[Duo] Setting up Livewire hooks, Livewire available:',
+        typeof window.Livewire !== 'undefined'
+      );
     }
 
     // Wait for Livewire to be available
@@ -181,7 +186,9 @@ export class LivewireIntegration {
               component.$wire?.$set?.(key, cachedData);
 
               if (this.config.debug) {
-                console.log(`[Duo] Hydrated ${key} with ${cachedData.length} records from IndexedDB`);
+                console.log(
+                  `[Duo] Hydrated ${key} with ${cachedData.length} records from IndexedDB`
+                );
               }
             }
           }
@@ -334,7 +341,10 @@ export class LivewireIntegration {
   /**
    * Cache Livewire component data
    */
-  private async cacheComponentData(componentName: string, data: Record<string, any>): Promise<void> {
+  private async cacheComponentData(
+    componentName: string,
+    data: Record<string, any>
+  ): Promise<void> {
     // Identify which models are in the component data
     for (const [key, value] of Object.entries(data)) {
       if (this.isModelData(value)) {
@@ -356,12 +366,7 @@ export class LivewireIntegration {
    * Check if data looks like a model
    */
   private isModelData(data: any): boolean {
-    return (
-      typeof data === 'object' &&
-      data !== null &&
-      'id' in data &&
-      !Array.isArray(data)
-    );
+    return typeof data === 'object' && data !== null && 'id' in data && !Array.isArray(data);
   }
 
   /**
