@@ -8,11 +8,12 @@ Duo enables automatic client-side caching and synchronization of your Eloquent m
 
 - 🚀 **Zero Configuration**: Add one trait and Duo automatically transforms your Livewire components to Alpine.js
 - 💾 **Automatic IndexedDB Caching**: Transparently cache Eloquent models in the browser
+- 🗄️ **Schema Extraction**: Automatically extracts database column types, nullability, and defaults for IndexedDB
 - ⚡ **Optimistic Updates**: Instant UI updates with background server synchronization
 - 🔄 **Offline Support**: Automatic offline detection with sync queue that resumes when back online
 - 📊 **Visual Sync Status**: Built-in component showing online/offline/syncing states
 - 🎯 **Livewire Integration**: Seamless integration with Livewire 3+ and Volt components
-- 📦 **Type-Safe**: Full TypeScript support with auto-generated types
+- 📦 **Type-Safe**: Full TypeScript support with auto-generated types from database schema
 - 🔌 **Vite Plugin**: Automatic manifest generation with file watching
 
 ## Local Development Setup
@@ -161,7 +162,17 @@ class Todo extends Model
 }
 ```
 
-This tells Duo which models to include in the auto-generated manifest.
+**Both `$fillable` and `$guarded` are supported:**
+
+```php
+// Option 1: Using $fillable (explicit allow list)
+protected $fillable = ['title', 'description', 'completed'];
+
+// Option 2: Using $guarded (explicit deny list)
+protected $guarded = ['id']; // Everything except 'id' is fillable
+```
+
+Duo automatically extracts your model's fillable attributes and database schema (column types, nullable, defaults) to generate the IndexedDB manifest—no manual configuration needed!
 
 ### 2. Configure Vite
 

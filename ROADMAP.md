@@ -304,6 +304,39 @@ Ensure compatibility with Livewire v4 when released.
 
 ---
 
+## 🚧 In Progress
+
+### Database Schema Extraction & TypeScript Types
+Auto-generate schema information and TypeScript types from Eloquent models.
+
+**Status:** 🚧 In Progress (Schema Extraction ✅ Complete, TypeScript Generation 📋 Planned)
+**Complexity:** Medium
+
+**Completed:**
+- ✅ Automatic database schema extraction (column types, nullable, defaults)
+- ✅ Support for both `$fillable` and `$guarded` properties
+- ✅ Schema included in manifest for IndexedDB type hints
+- ✅ Maps database types to JavaScript-friendly types (string, number, boolean, date, object, blob)
+
+**Planned:**
+- 📋 Auto-generate TypeScript interfaces from extracted schema
+- 📋 Export types for use in frontend code
+- 📋 Type-safe IndexedDB queries
+
+```typescript
+// Auto-generated from Todo model schema
+interface Todo {
+    id: number;              // from schema: { type: 'number', nullable: false, autoIncrement: true }
+    title: string;           // from schema: { type: 'string', nullable: false }
+    description: string | null; // from schema: { type: 'string', nullable: true }
+    completed: boolean;      // from schema: { type: 'number', nullable: false }
+    created_at: Date | null; // from schema: { type: 'date', nullable: true }
+    updated_at: Date | null; // from schema: { type: 'date', nullable: true }
+}
+```
+
+---
+
 ## 💡 Future Ideas
 
 ### Background Sync Service Worker
@@ -331,26 +364,6 @@ Better integration with Livewire Flux components inside loops.
 - Component slot rendering
 - Hybrid approach (Flux wrapper, Alpine content)
 - Custom Flux-to-Alpine compiler
-
----
-
-### TypeScript Type Generation
-Auto-generate TypeScript types from Eloquent models.
-
-**Status:** 💭 Concept
-**Complexity:** Medium
-
-```typescript
-// Auto-generated from Todo model
-interface Todo {
-    id: number;
-    title: string;
-    description: string | null;
-    completed: boolean;
-    created_at: string;
-    updated_at: string;
-}
-```
 
 ---
 
