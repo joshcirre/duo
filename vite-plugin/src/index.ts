@@ -39,6 +39,18 @@ export interface DuoPluginOptions {
    * Custom artisan command to run
    */
   command?: string;
+
+  /**
+   * Path to your main JavaScript entry file (relative to basePath)
+   * Duo will automatically inject initialization code into this file
+   */
+  entry?: string;
+
+  /**
+   * Whether to automatically inject Duo initialization code
+   * Set to false if you want to manually initialize Duo
+   */
+  autoInject?: boolean;
 }
 
 /**
@@ -52,6 +64,8 @@ export function duo(options: DuoPluginOptions = {}): Plugin {
     basePath = process.cwd(),
     autoGenerate = true,
     command = 'php artisan duo:generate',
+    entry = 'resources/js/app.js',
+    autoInject = true,
   } = options;
 
   const resolvedManifestPath = resolve(basePath, manifestPath);
@@ -60,6 +74,10 @@ export function duo(options: DuoPluginOptions = {}): Plugin {
 
   // Normalize patterns for cross-platform compatibility
   const normalizedPatterns = patterns.map((pattern) => pattern.replace(/\\/g, '/'));
+
+  // Normalize entry path for cross-platform compatibility
+  const resolvedEntryPath = resolve(basePath, entry);
+  const normalizedEntryPath = resolvedEntryPath.replace(/\\/g, '/');
 
   let context: PluginContext;
 
@@ -146,11 +164,32 @@ export function duo(options: DuoPluginOptions = {}): Plugin {
     },
 
     transform(code, id) {
-      // Inject Duo client initialization in Livewire components
-      if (id.includes('@livewire') || id.includes('livewire/livewire.js')) {
-        const duoImport = `import { initializeDuo } from '@joshcirre/duo/client';\ninitializeDuo();`;
+      if (!autoInject) {
+        return null;
+      }
+
+      // Normalize the file ID for cross-platform comparison
+      const normalizedId = id.replace(/\\/g, '/');
+
+      // Check if this is the user's entry file
+      if (normalizedId === normalizedEntryPath || normalizedId.endsWith('/' + entry)) {
+        // Inject Duo initialization at the top of the entry file
+        const duoInit = `import { initializeDuo } from '@joshcirre/vite-plugin-duo/client';
+import manifest from 'virtual:duo-manifest';
+
+// Auto-initialized by Duo Vite plugin
+initializeDuo({
+  manifest,
+  debug: import.meta.env.DEV,
+  syncInterval: 5000,
+  maxRetries: 3,
+}).catch((error) => {
+  console.error('[Duo] Initialization failed:', error);
+});
+
+`;
         return {
-          code: `${duoImport}\n${code}`,
+          code: `${duoInit}${code}`,
           map: null,
         };
       }
