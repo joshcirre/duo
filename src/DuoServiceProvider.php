@@ -123,8 +123,18 @@ final class DuoServiceProvider extends ServiceProvider
 
         \Log::info('[Duo] Registering Livewire hooks with global query logging');
 
+        // Check if EventBus exists
+        try {
+            $eventBus = app(\Livewire\EventBus::class);
+            \Log::info('[Duo] EventBus resolved successfully: '.get_class($eventBus));
+        } catch (\Exception $e) {
+            \Log::error('[Duo] Failed to resolve EventBus: '.$e->getMessage());
+
+            return;
+        }
+
         // Hook into Livewire's render event to transform HTML for Duo components
-        app(\Livewire\EventBus::class)->on('render', function ($component, $view, $properties) {
+        $eventBus->on('render', function ($component, $view, $properties) {
             \Log::info('[Duo] Render event triggered for component: '.get_class($component));
             // Check if component uses WithDuo trait
             if (! in_array(\JoshCirre\Duo\WithDuo::class, class_uses_recursive($component))) {
@@ -356,9 +366,9 @@ final class DuoServiceProvider extends ServiceProvider
                 // Convert Collections to arrays
                 $arrayValue = is_array($value) ? $value : $value->toArray();
 
-                if (! empty($arrayValue)) {
-                    $arrayProperties[$key] = $arrayValue;
-                }
+                // Include ALL array properties, even if empty
+                // Empty arrays still need transformation for reactive updates
+                $arrayProperties[$key] = $arrayValue;
             }
         }
 
@@ -383,13 +393,15 @@ final class DuoServiceProvider extends ServiceProvider
      */
     protected function convertBladeLoopToAlpine(string $html, string $bladeSource, string $propName, array $items): string
     {
-        if (empty($items)) {
-            return $html;
-        }
+        // Note: We must transform even if items is empty
+        // This ensures reactive updates work when items are added later
 
         // Find @forelse or @foreach block in Blade source
-        // Pattern: @forelse($todos as $todo) ... @empty ... @endforelse
-        $foreachPattern = '/@(?:forelse|foreach)\(\$'.$propName.'\s+as\s+\$(\w+)\)(.*?)@(?:empty|endforelse)/s';
+        // Pattern supports both:
+        // - @foreach($todos as $todo) ... @endforeach (direct or computed)
+        // - @forelse($todos as $todo) ... @empty ... @endforelse (direct or computed)
+        // - Both $todos and $this->todos are supported
+        $foreachPattern = '/@(?:forelse|foreach)\(\$(?:this->)?'.$propName.'\s+as\s+\$(\w+)\)(.*?)@(?:empty|endforelse|endforeach)/s';
 
         if (! preg_match($foreachPattern, $bladeSource, $bladeMatch)) {
             \Log::info('[Duo] Could not find @forelse or @foreach for: '.$propName);
@@ -414,12 +426,17 @@ final class DuoServiceProvider extends ServiceProvider
             \Log::info('[Duo] Found @empty content, length: '.strlen($emptyContent));
         }
 
-        // Find the rendered loop container in HTML (any div with space-y-* class or similar)
-        // We'll look for the rendered content and replace it
-        $containerPattern = '/(<div class="space-y-\d+"[^>]*>)\s*(<!--\[if BLOCK\]><!\[endif\]-->)?\s*(.*)\s*(<!--\[if ENDBLOCK\]><!\[endif\]-->)\s*(<\/div>)/s';
+        // Find the rendered loop container in HTML
+        // Look for the parent div that wraps the foreach content
+        // We need to match ONLY the div that contains the BLOCK comments
+        // IMPORTANT: Make BLOCK comments required to avoid matching wrong divs
+        $containerPattern = '/(<div[^>]*class="[^"]*(?:flex|space-y|grid)[^"]*"[^>]*>)\s*<!--\[if BLOCK\]><!\[endif\]-->\s*(.*?)\s*<!--\[if ENDBLOCK\]><!\[endif\]-->\s*(<\/div>)/s';
 
         if (preg_match($containerPattern, $html, $containerMatch)) {
-            \Log::info('[Duo] Found rendered container in HTML');
+            \Log::info('[Duo] Found rendered container in HTML', [
+                'matched_html_length' => strlen($containerMatch[0]),
+                'matched_opening_tag' => $containerMatch[1],
+            ]);
 
             // Transform Blade template to Alpine
             $alpineTemplate = $this->transformBladeToAlpine($bladeTemplate, $itemVarName);
@@ -444,13 +461,20 @@ final class DuoServiceProvider extends ServiceProvider
                 );
             }
 
-            $replacement .= $containerMatch[5]; // closing </div>
+            $replacement .= $containerMatch[3]; // closing </div>
 
-            $html = str_replace($containerMatch[0], $replacement, $html);
-            \Log::info('[Duo] Successfully transformed Blade loop to Alpine');
+            // Use preg_replace instead of str_replace for more reliable matching
+            // This replaces only the FIRST occurrence to avoid affecting other similar divs
+            $html = preg_replace($containerPattern, $replacement, $html, 1);
+            \Log::info('[Duo] Successfully transformed Blade loop to Alpine', [
+                'replacement_length' => strlen($replacement),
+            ]);
         } else {
             \Log::info('[Duo] Could not find rendered container in HTML');
         }
+
+        // Transform Livewire forms to Alpine
+        $html = $this->transformFormsToAlpine($html);
 
         return $html;
     }
@@ -538,6 +562,41 @@ final class DuoServiceProvider extends ServiceProvider
         \Log::info('[Duo] Blade to Alpine transformation complete', ['result_length' => strlen($template)]);
 
         return $template;
+    }
+
+    /**
+     * Transform Livewire forms to use Alpine instead.
+     * Converts wire:submit and wire:model to Alpine equivalents.
+     */
+    protected function transformFormsToAlpine(string $html): string
+    {
+        \Log::info('[Duo] Transforming forms to Alpine');
+
+        // Transform wire:submit="methodName" to @submit.prevent="methodName()"
+        $html = preg_replace(
+            '/wire:submit(?:\.prevent)?="(\w+)"/i',
+            'x-on:submit.prevent="$1()"',
+            $html
+        );
+
+        // Transform wire:model="propertyName" to x-model="propertyName"
+        $html = preg_replace(
+            '/wire:model(?:\.\w+)?="(\w+)"/i',
+            'x-model="$1"',
+            $html
+        );
+
+        // Transform wire:click="methodName" to @click.prevent="methodName()"
+        // (for buttons and other clickable elements outside of loops)
+        $html = preg_replace(
+            '/wire:click(?:\.prevent)?="(\w+)"/i',
+            'x-on:click.prevent="$1()"',
+            $html
+        );
+
+        \Log::info('[Duo] Forms transformed to Alpine');
+
+        return $html;
     }
 
     /**
@@ -687,8 +746,23 @@ final class DuoServiceProvider extends ServiceProvider
                     // Try to access it - Livewire's __get will call the method
                     if (property_exists($component, $propertyName) || method_exists($component, '__get')) {
                         $value = $component->$propertyName;
+
+                        // Handle Eloquent relationships and collections
+                        if ($value instanceof \Illuminate\Database\Eloquent\Relations\Relation) {
+                            // If it's a relationship, call get() to convert to collection
+                            $value = $value->get();
+                        }
+
+                        if ($value instanceof \Illuminate\Database\Eloquent\Collection) {
+                            // Convert collection to array for JSON serialization
+                            $value = $value->toArray();
+                        } elseif ($value instanceof \Illuminate\Database\Eloquent\Model) {
+                            // Convert single model to array
+                            $value = $value->toArray();
+                        }
+
                         $computed[$propertyName] = $value;
-                        \Log::info("[Duo] Extracted computed property: $propertyName");
+                        \Log::info("[Duo] Extracted computed property: $propertyName", ['type' => gettype($value)]);
                     }
                 } catch (\Exception $e) {
                     \Log::warning("[Duo] Failed to extract computed property $methodName: ".$e->getMessage());
@@ -900,6 +974,19 @@ final class DuoServiceProvider extends ServiceProvider
         $orderBy = $this->extractOrderBy($renderQueries);
         \Log::info('[Duo] Extracted ORDER BY', ['orderBy' => $orderBy]);
 
+        // Extract form field properties (exclude arrays/collections which are the data lists)
+        $formFields = [];
+        foreach ($data as $key => $value) {
+            if (! is_array($value) && ! (is_object($value) && method_exists($value, 'toArray'))) {
+                // This is a scalar property, likely a form field
+                if (! str_starts_with($key, '$') && $key !== 'id') {
+                    $formFields[] = $key;
+                }
+            }
+        }
+
+        \Log::info('[Duo] Detected form fields', ['fields' => $formFields]);
+
         $alpineMethods = '';
 
         foreach ($methods as $method) {
@@ -915,15 +1002,33 @@ final class DuoServiceProvider extends ServiceProvider
 
             // Determine operation based on method naming convention
             if (str_starts_with($methodName, 'add') || str_starts_with($methodName, 'create')) {
-                // CREATE operation
+                // CREATE operation - use detected form fields
+                $primaryField = $formFields[0] ?? 'title'; // Use first field or default to 'title'
+
+                // Build validation check (first field is required)
+                $validation = "if (!this.{$primaryField} || this.{$primaryField}.trim().length < 3) {
+                            alert('".ucfirst($primaryField)." must be at least 3 characters');
+                            return;
+                        }";
+
+                // Build newItem object dynamically from form fields
+                $newItemFields = 'id: Date.now()';
+                $resetFields = '';
+                foreach ($formFields as $field) {
+                    $newItemFields .= ",\n                            {$field}: this.{$field}";
+                    if ($field !== $primaryField) {
+                        $newItemFields .= " ? this.{$field}.trim() : ''";
+                    } else {
+                        $newItemFields .= '.trim()';
+                    }
+                    $resetFields .= "\n                        this.{$field} = '';";
+                }
+
                 $alpineMethods .= "async {$methodName}({$paramString}) {
                         if (!window.duo) return;
 
                         // Simple client-side validation
-                        if (!this.newTodoTitle || this.newTodoTitle.trim().length < 3) {
-                            alert('Title must be at least 3 characters');
-                            return;
-                        }
+                        {$validation}
 
                         const db = window.duo.getDatabase();
                         const syncQueue = window.duo.getSyncQueue();
@@ -931,9 +1036,7 @@ final class DuoServiceProvider extends ServiceProvider
                         if (!store || !syncQueue) return;
 
                         const newItem = {
-                            id: Date.now(),
-                            title: this.newTodoTitle.trim(),
-                            description: this.newTodoDescription ? this.newTodoDescription.trim() : '',
+                            {$newItemFields},
                             completed: false,
                             created_at: new Date().toISOString(),
                             updated_at: new Date().toISOString(),
@@ -951,9 +1054,7 @@ final class DuoServiceProvider extends ServiceProvider
                         });
                         console.log('[Duo] Enqueued create operation for background sync');
 
-                        // Reset form fields
-                        this.newTodoTitle = '';
-                        this.newTodoDescription = '';
+                        // Reset form fields{$resetFields}
 
                         // Refresh UI immediately (optimistic update)
                         await this.duoSync();

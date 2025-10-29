@@ -41,15 +41,23 @@ export class DuoClient {
     // Load manifest (either passed directly or fetched)
     const manifest = this.config.manifest || await this.loadManifest();
 
+    // Create a unique database name per application origin
+    // This prevents multiple apps on the same domain from sharing IndexedDB
+    const databaseName = this.generateDatabaseName();
+
     // Create database
     const dbConfig: DuoConfig = {
-      databaseName: 'duo_cache',
+      databaseName,
       databaseVersion: 1,
       stores: manifest,
       debug: this.config.debug,
     };
 
     this.db = new DuoDatabase(dbConfig);
+
+    if (this.config.debug) {
+      console.log(`[Duo] Database initialized: ${databaseName} (origin: ${window.location.origin})`);
+    }
 
     // Hydrate stores from server on first load
     await this.hydrateStores();
@@ -99,6 +107,33 @@ export class DuoClient {
       console.error('[Duo] Failed to load manifest:', error);
       return {};
     }
+  }
+
+  /**
+   * Generate a unique database name based on the application origin
+   * This ensures each app has its own IndexedDB even on the same domain
+   */
+  private generateDatabaseName(): string {
+    // Use origin (protocol + hostname + port) to create unique database name
+    const origin = window.location.origin;
+
+    // Simple hash function to create a short identifier
+    const hash = this.simpleHash(origin);
+
+    return `duo_${hash}`;
+  }
+
+  /**
+   * Simple string hash function for creating database identifiers
+   */
+  private simpleHash(str: string): string {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      const char = str.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash = hash & hash; // Convert to 32bit integer
+    }
+    return Math.abs(hash).toString(36);
   }
 
   /**

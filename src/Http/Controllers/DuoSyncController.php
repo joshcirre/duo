@@ -64,6 +64,12 @@ class DuoSyncController extends Controller
         }
 
         $data = $request->except(['_duo_pending_sync', '_duo_operation', '_duo_synced_at']);
+
+        // Add user_id if the model has a user relationship and user_id column
+        if ($request->user() && method_exists($model, 'user')) {
+            $data['user_id'] = $request->user()->id;
+        }
+
         $record = $model::create($data);
 
         return response()->json($record, 201);
