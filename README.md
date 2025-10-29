@@ -85,14 +85,20 @@ This watches for TypeScript changes and rebuilds automatically. Changes are imme
 In your Laravel app:
 
 ```bash
-# Run Vite dev server
-npm run dev
-
-# In another terminal, run Laravel
-php artisan serve
+# Run both Vite and Laravel (recommended)
+composer run dev
 ```
 
-Any changes you make to Duo's PHP or TypeScript code will be reflected immediately!
+This runs both `npm run dev` and `php artisan serve` concurrently. Any changes you make to Duo's PHP or TypeScript code will be reflected immediately!
+
+**Alternative (manual):**
+```bash
+# Terminal 1: Vite
+npm run dev
+
+# Terminal 2: Laravel
+php artisan serve
+```
 
 ### 6. Unlinking (When Done)
 
@@ -329,16 +335,21 @@ This component shows:
 - 🔵 **Syncing**: "Syncing X changes..."
 - 🟢 **Synced**: "All changes synced"
 
-### 6. Build Your Assets
+### 6. Run Your Application
 
 ```bash
-npm run dev
+composer run dev
 ```
 
-The Vite plugin will automatically:
+This runs both `npm run dev` and `php artisan serve` concurrently. The Vite plugin will automatically:
 - Run `php artisan duo:generate` to create the manifest
 - Watch for model and component changes
 - Regenerate the manifest when files change
+
+**For production:**
+```bash
+npm run build
+```
 
 ## How It Works
 

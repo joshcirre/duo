@@ -1,5 +1,6 @@
 import { DuoDatabase, type DuoConfig, type DuoRecord } from './core/database';
 import { SyncQueue, type SyncQueueConfig } from './sync/queue';
+import { ServiceWorkerManager, type ServiceWorkerConfig } from './offline/service-worker-manager';
 
 export interface DuoClientConfig {
   manifest?: Record<string, any>;
@@ -7,6 +8,7 @@ export interface DuoClientConfig {
   syncInterval?: number;
   maxRetries?: number;
   debug?: boolean;
+  offline?: ServiceWorkerConfig;
 }
 
 /**
@@ -15,6 +17,7 @@ export interface DuoClientConfig {
 export class DuoClient {
   private db?: DuoDatabase;
   private syncQueue?: SyncQueue;
+  private serviceWorkerManager?: ServiceWorkerManager;
   private config: DuoClientConfig;
 
   constructor(config: DuoClientConfig = {}) {
@@ -23,6 +26,10 @@ export class DuoClient {
       syncInterval: 5000,
       maxRetries: 3,
       debug: false,
+      offline: {
+        enabled: true,
+        ...config.offline,
+      },
       ...config,
     };
   }
@@ -64,6 +71,12 @@ export class DuoClient {
 
     this.syncQueue = new SyncQueue(this.db, syncConfig);
     this.syncQueue.start();
+
+    // Register service worker for offline page caching
+    if (this.config.offline?.enabled !== false) {
+      this.serviceWorkerManager = new ServiceWorkerManager(this.config.offline);
+      await this.serviceWorkerManager.register();
+    }
 
     if (this.config.debug) {
       console.log('[Duo] Client initialized');
@@ -116,6 +129,13 @@ export class DuoClient {
   }
 
   /**
+   * Get the service worker manager instance
+   */
+  getServiceWorkerManager(): ServiceWorkerManager | undefined {
+    return this.serviceWorkerManager;
+  }
+
+  /**
    * Manually trigger a sync
    */
   async sync(): Promise<void> {
@@ -126,12 +146,13 @@ export class DuoClient {
   }
 
   /**
-   * Clear all cached data
+   * Clear all cached data (IndexedDB and Service Worker caches)
    */
   async clearCache(): Promise<void> {
     await this.db?.clearAll();
+    await this.serviceWorkerManager?.clearCache();
     if (this.config.debug) {
-      console.log('[Duo] Cache cleared');
+      console.log('[Duo] All caches cleared');
     }
   }
 
@@ -141,6 +162,7 @@ export class DuoClient {
   async destroy(): Promise<void> {
     this.syncQueue?.stop();
     await this.db?.close();
+    await this.serviceWorkerManager?.unregister();
 
     if (this.config.debug) {
       console.log('[Duo] Client destroyed');

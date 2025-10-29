@@ -49,6 +49,8 @@ final class DuoServiceProvider extends ServiceProvider
             __DIR__.'/../resources/views' => resource_path('views/vendor/duo'),
         ], 'duo-views');
 
+        // Note: Service worker is served dynamically via route (no publishing needed!)
+
         // Register commands
         if ($this->app->runningInConsole()) {
             $this->commands([
@@ -67,6 +69,9 @@ final class DuoServiceProvider extends ServiceProvider
 
         // Register Livewire mechanism for HTML transformation
         $this->registerLivewireMechanism();
+
+        // Register Blade directives
+        $this->registerBladeDirectives();
     }
 
     /**
@@ -74,6 +79,23 @@ final class DuoServiceProvider extends ServiceProvider
      */
     protected function registerRoutes(): void
     {
+        // Serve service worker dynamically from package (no publishing needed!)
+        Route::get('duo-sw.js', function () {
+            $path = __DIR__ . '/../dist/public/duo-sw.js';
+
+            if (!file_exists($path)) {
+                abort(404, 'Service worker file not found');
+            }
+
+            return response()
+                ->file($path, [
+                    'Content-Type' => 'application/javascript',
+                    'Service-Worker-Allowed' => '/',
+                    'Cache-Control' => 'no-cache, no-store, must-revalidate',
+                ]);
+        })->name('duo.service-worker');
+
+        // API routes for sync
         Route::prefix('api/duo')
             ->middleware(['api'])
             ->group(function () {
@@ -960,5 +982,16 @@ final class DuoServiceProvider extends ServiceProvider
                     },\n";
 
         return $alpineMethods;
+    }
+
+    /**
+     * Register Blade directives for Duo
+     */
+    protected function registerBladeDirectives(): void
+    {
+        // @duoMeta - Injects the cache meta tag for offline page caching
+        \Blade::directive('duoMeta', function () {
+            return '<?php echo \'<meta name="duo-cache" content="true" data-duo-version="1.0">\'; ?>';
+        });
     }
 }
