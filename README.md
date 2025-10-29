@@ -1,4 +1,4 @@
-# Duo
+# Duo (VERY MUCH A WIP)
 
 **Local-first IndexedDB syncing for Laravel and Livewire applications.**
 
