@@ -192,30 +192,13 @@ export default defineConfig({
 });
 ```
 
-### 3. Initialize in Your JavaScript
+> **Note:** The Duo Vite plugin automatically injects the initialization code into your `app.js` file. No manual initialization needed!
+>
+> You can customize the auto-injection behavior with these options:
+> - `entry` - Path to your main JS file (default: `'resources/js/app.js'`)
+> - `autoInject` - Set to `false` to manually initialize Duo
 
-In your `resources/js/app.js`:
-
-```javascript
-import { initializeDuo } from '@joshcirre/vite-plugin-duo/client';
-import manifest from 'virtual:duo-manifest';
-
-(async () => {
-    try {
-        await initializeDuo({
-            manifest,
-            debug: import.meta.env.DEV,
-            syncInterval: 5000,  // Background sync interval in milliseconds
-            maxRetries: 3,       // Max retry attempts for failed syncs
-        });
-        console.log('Duo initialized successfully');
-    } catch (error) {
-        console.error('[Duo] Initialization failed:', error);
-    }
-})();
-```
-
-### 4. Add the WithDuo Trait to Your Livewire Components
+### 3. Add the WithDuo Trait to Your Livewire Components
 
 This is where the magic happens! Add the `WithDuo` trait to any Livewire component and Duo will automatically transform it to use IndexedDB:
 
@@ -583,8 +566,8 @@ If your Livewire component isn't being transformed to Alpine:
 If you see this error in the console:
 
 1. **Check Duo is initialized:**
-   - Verify `initializeDuo()` is called in `app.js`
-   - Check the manifest is imported: `import manifest from 'virtual:duo-manifest'`
+   - Duo initializes automatically via the Vite plugin
+   - Check that the Duo plugin is added to your `vite.config.js`
 
 2. **Regenerate the manifest:**
    ```bash
