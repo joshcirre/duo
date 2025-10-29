@@ -151,8 +151,12 @@ final class DuoServiceProvider extends ServiceProvider
                 // Get view data (which includes 'todos')
                 $viewData = method_exists($view, 'getData') ? $view->getData() : [];
 
-                // Combine view data and component properties
-                $allData = array_merge($properties, $viewData);
+                // Get computed properties from the component
+                $computedProperties = $this->getComputedProperties($component);
+                \Log::info('[Duo] Computed properties found', ['properties' => array_keys($computedProperties)]);
+
+                // Combine view data, component properties, and computed properties
+                $allData = array_merge($properties, $viewData, $computedProperties);
                 \Log::info('[Duo] Combined data', ['keys' => array_keys($allData)]);
 
                 // Detect public methods on the component (simple signature analysis)
@@ -644,6 +648,55 @@ final class DuoServiceProvider extends ServiceProvider
         }
 
         return $methods;
+    }
+
+    /**
+     * Get computed properties from a Livewire component.
+     */
+    protected function getComputedProperties($component): array
+    {
+        $computed = [];
+        $reflection = new \ReflectionClass($component);
+
+        foreach ($reflection->getMethods(\ReflectionMethod::IS_PUBLIC) as $method) {
+            // Skip if not from the current class
+            if ($method->getDeclaringClass()->getName() !== get_class($component)) {
+                continue;
+            }
+
+            // Check if method has Computed attribute
+            $attributes = $method->getAttributes();
+            $hasComputedAttribute = false;
+
+            foreach ($attributes as $attribute) {
+                $attributeName = $attribute->getName();
+                if ($attributeName === 'Livewire\Attributes\Computed' ||
+                    str_ends_with($attributeName, '\Computed')) {
+                    $hasComputedAttribute = true;
+                    break;
+                }
+            }
+
+            if ($hasComputedAttribute) {
+                $methodName = $method->getName();
+                try {
+                    // Access the computed property through the component
+                    // Livewire allows accessing computed methods as properties
+                    $propertyName = $methodName;
+
+                    // Try to access it - Livewire's __get will call the method
+                    if (property_exists($component, $propertyName) || method_exists($component, '__get')) {
+                        $value = $component->$propertyName;
+                        $computed[$propertyName] = $value;
+                        \Log::info("[Duo] Extracted computed property: $propertyName");
+                    }
+                } catch (\Exception $e) {
+                    \Log::warning("[Duo] Failed to extract computed property $methodName: ".$e->getMessage());
+                }
+            }
+        }
+
+        return $computed;
     }
 
     /**
