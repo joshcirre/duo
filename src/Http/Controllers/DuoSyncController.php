@@ -72,7 +72,7 @@ class DuoSyncController extends Controller
 
             // Add user_id if the model has a user relationship
             // This bypasses $fillable for security-sensitive fields
-            if ($request->user() && method_exists($model, 'user')) {
+            if ($request->user() && method_exists($record, 'user')) {
                 $record->user_id = $request->user()->id;
             }
 
