@@ -14,15 +14,56 @@ $classes = $inline ? '' : ($positionClasses[$position] ?? $positionClasses['top-
 
 <div
     x-data="{
-        duoSyncStatus: { isOnline: true, pendingCount: 0, isProcessing: false },
-        updateSyncStatus() {
-            if (window.duo && window.duo.getSyncQueue()) {
-                this.duoSyncStatus = window.duo.getSyncQueue().getSyncStatus();
+        duoSyncStatus: { isOnline: navigator.onLine, pendingCount: 0, isProcessing: false },
+        async init() {
+            // Wait for Duo client to be ready
+            if (!window.duo) {
+                await new Promise(resolve => {
+                    const checkDuo = setInterval(() => {
+                        if (window.duo) {
+                            clearInterval(checkDuo);
+                            resolve();
+                        }
+                    }, 100);
+
+                    // Timeout after 5 seconds
+                    setTimeout(() => {
+                        clearInterval(checkDuo);
+                        resolve();
+                    }, 5000);
+                });
             }
-        },
-        init() {
-            this.updateSyncStatus();
-            setInterval(() => this.updateSyncStatus(), 1000);
+
+            if (!window.duo) return;
+
+            const db = window.duo.getDatabase();
+            if (!db) return;
+
+            // Use liveQuery to reactively count pending operations across all stores
+            const subscription = window.duo.liveQuery(async () => {
+                let totalPending = 0;
+                for (const [storeName, store] of db.getAllStores()) {
+                    const pending = await store.where('_duo_pending_sync').equals(1).count();
+                    totalPending += pending;
+                }
+                return totalPending;
+            }).subscribe(
+                count => {
+                    this.duoSyncStatus.pendingCount = count;
+                },
+                error => console.error('[Duo] Error in sync status liveQuery:', error)
+            );
+
+            // Listen for online/offline events
+            window.addEventListener('online', () => {
+                this.duoSyncStatus.isOnline = true;
+            });
+            window.addEventListener('offline', () => {
+                this.duoSyncStatus.isOnline = false;
+            });
+
+            // Cleanup subscription when component is destroyed
+            this.$cleanup = () => subscription.unsubscribe();
         }
     }"
     x-init="init()"

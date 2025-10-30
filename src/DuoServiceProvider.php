@@ -151,20 +151,29 @@ final class DuoServiceProvider extends ServiceProvider
 
             \Log::info('[Duo] Component DOES use Duo trait - will transform HTML');
 
+            // Set a flag to indicate this page has a Duo-enabled component
+            // This will be used by @duoMeta to conditionally enable offline caching
+            app()->instance('duo.has_enabled_component', true);
+
             // Return a finisher callback that will transform the HTML
             return function ($html, $replaceHtml = null, $viewContext = null) use ($properties, $view, $component) {
-                // Get ALL queries that have been logged so far (includes render queries)
-                $allQueries = \DB::getQueryLog();
-
-                // Filter to just SELECT queries (render queries)
-                $renderQueries = array_filter($allQueries, function ($q) {
-                    return stripos($q['query'], 'select') === 0;
-                });
-
-                \Log::info('[Duo] Render queries', ['queries' => $renderQueries]);
                 \Log::info('[Duo] Finisher callback called with HTML length: '.strlen($html));
 
-                // Get view data (which includes 'todos')
+                // Get Blade source file path
+                $bladePath = $view->getPath();
+                if (! $bladePath || ! file_exists($bladePath)) {
+                    \Log::warning('[Duo] Could not find Blade source file');
+
+                    return $html;
+                }
+
+                $bladeSource = file_get_contents($bladePath);
+                \Log::info('[Duo] Read Blade source', [
+                    'path' => $bladePath,
+                    'length' => strlen($bladeSource),
+                ]);
+
+                // Get view data
                 $viewData = method_exists($view, 'getData') ? $view->getData() : [];
 
                 // Get computed properties from the component
@@ -175,444 +184,34 @@ final class DuoServiceProvider extends ServiceProvider
                 $allData = array_merge($properties, $viewData, $computedProperties);
                 \Log::info('[Duo] Combined data', ['keys' => array_keys($allData)]);
 
-                // Detect public methods on the component (simple signature analysis)
+                // Detect public methods on the component
                 $componentMethods = $this->getComponentMethods($component);
                 \Log::info('[Duo] Component methods detected', ['count' => count($componentMethods)]);
 
-                // Replace wire:model with x-model for Alpine
-                $html = preg_replace(
-                    '/wire:model="([^"]+)"/i',
-                    'x-model="$1"',
-                    $html
-                );
+                // Use the new Blade Parser-based transformer
+                try {
+                    $transformer = new \JoshCirre\Duo\BladeToAlpineTransformer(
+                        $bladeSource,
+                        $html,
+                        $allData,
+                        $componentMethods,
+                        $component
+                    );
 
-                // Replace wire:submit with Alpine @submit (for forms outside loops)
-                $html = preg_replace(
-                    '/wire:submit(?:\.prevent)?="([^"]+)"/i',
-                    '@submit.prevent="$1"',
-                    $html
-                );
+                    return $transformer->transform();
+                } catch (\Exception $e) {
+                    \Log::error('[Duo] Transformation failed: '.$e->getMessage(), [
+                        'exception' => $e,
+                        'trace' => $e->getTraceAsString(),
+                    ]);
 
-                // Replace wire:click with Alpine @click (for buttons outside loops)
-                $html = preg_replace(
-                    '/wire:click="([^"]+)"/i',
-                    '@click.prevent="$1"',
-                    $html
-                );
-
-                // Prepare component data for Alpine
-                $alpineDataJson = json_encode($allData);
-
-                // Generate Alpine method implementations
-                $alpineMethods = $this->generateAlpineMethods($componentMethods, $allData, $renderQueries);
-
-                // Build the x-data object by combining data properties and methods
-                // We'll build it as a proper JavaScript object instead of using spread
-                $dataProperties = [];
-                foreach ($allData as $key => $value) {
-                    $dataProperties[] = $key.': '.json_encode($value);
+                    // Return original HTML if transformation fails
+                    return $html;
                 }
-                $dataPropertiesString = implode(",\n                    ", $dataProperties);
-
-                // Inject Duo sync methods and component methods directly into x-data
-                // This gives the component access to its reactive data via 'this'
-                // Note: $alpineMethods now includes duoSync() with proper sorting
-                $xDataContent = '{
-                    '.$dataPropertiesString.',
-                    duoLoading: true,
-                    duoReady: false,
-                    timeAgo(dateString) {
-                        const date = new Date(dateString);
-                        const now = new Date();
-                        const seconds = Math.floor((now - date) / 1000);
-
-                        const intervals = {
-                            year: 31536000,
-                            month: 2592000,
-                            week: 604800,
-                            day: 86400,
-                            hour: 3600,
-                            minute: 60,
-                            second: 1
-                        };
-
-                        for (const [unit, secondsInUnit] of Object.entries(intervals)) {
-                            const interval = Math.floor(seconds / secondsInUnit);
-                            if (interval >= 1) {
-                                return interval === 1 ? `1 ${unit} ago` : `${interval} ${unit}s ago`;
-                            }
-                        }
-
-                        return \'just now\';
-                    },
-                    '.$alpineMethods.'
-                    async syncServerToIndexedDB() {
-                        try {
-                            console.log(\'[Duo] syncServerToIndexedDB started\');
-
-                            // When offline, skip sync - IndexedDB is the source of truth
-                            // The service worker serves cached HTML with stale server data
-                            if (!navigator.onLine) {
-                                console.log(\'[Duo] Offline mode - skipping server sync, IndexedDB is source of truth\');
-                                return;
-                            }
-
-                            // Wait for window.duo to be available (with timeout)
-                            let attempts = 0;
-                            const maxAttempts = 100; // 10 seconds total
-                            while (!window.duo && attempts < maxAttempts) {
-                                await new Promise(resolve => setTimeout(resolve, 100));
-                                attempts++;
-                                if (attempts % 10 === 0) {
-                                    console.log(\'[Duo] Still waiting for window.duo...\', attempts, \'/\', maxAttempts);
-                                }
-                            }
-
-                            // Sync initial server data to IndexedDB (server is source of truth when online)
-                            if (!window.duo) {
-                                console.error(\'[Duo] window.duo not available after\', maxAttempts * 100, \'ms\');
-                                return;
-                            }
-
-                            console.log(\'[Duo] window.duo is available!\');
-
-                            const db = window.duo.getDatabase();
-                            if (!db) {
-                                console.warn(\'[Duo] Database not available\');
-                                return;
-                            }
-
-                            const store = db.getStore(\'App_Models_Todo\');
-                            if (!store) {
-                                console.warn(\'[Duo] Store not found\');
-                                return;
-                            }
-
-                            // Get todos from the initial server data
-                            const serverTodos = this.todos || [];
-                            console.log(\'[Duo] Server has\', serverTodos.length, \'todos:\', serverTodos);
-
-                            // Always clear IndexedDB to sync with server state (even if empty)
-                            console.log(\'[Duo] Clearing IndexedDB...\');
-                            await store.clear();
-
-                            if (serverTodos.length > 0) {
-                                console.log(\'[Duo] Writing\', serverTodos.length, \'todos to IndexedDB...\');
-                                await store.bulkPut(serverTodos.map(item => ({
-                                    ...item,
-                                    _duo_synced_at: Date.now(),
-                                    _duo_pending_sync: false
-                                })));
-                            }
-
-                            console.log(\'[Duo] ✅ Server data synced to IndexedDB successfully\');
-                        } catch (error) {
-                            console.error(\'[Duo] Error syncing server data to IndexedDB:\', error);
-                        }
-                    },
-                    async init() {
-                        console.log(\'[Duo] Component init() called\');
-                        this.duoLoading = true;
-
-                        // First sync server data to IndexedDB, then load it back
-                        await this.syncServerToIndexedDB();
-                        await this.duoSync();
-
-                        // Mark as ready (removes loading state)
-                        this.duoLoading = false;
-                        this.duoReady = true;
-
-                        console.log(\'[Duo] Component initialization complete\');
-                    }
-                }';
-
-                // Add duo-enabled and Alpine x-data to the root element
-                $html = preg_replace(
-                    '/^(<[^>]+?)>/',
-                    '$1 data-duo-enabled="true" x-data="'.htmlspecialchars($xDataContent, ENT_QUOTES, 'UTF-8').'">',
-                    $html,
-                    1
-                );
-
-                // Transform forelse loops to Alpine x-for for reactive rendering
-                $html = $this->transformBladeLoopsToAlpine($html, $allData, $view);
-
-                return $html;
             };
         });
     }
 
-    /**
-     * Transform Blade-rendered loops to Alpine x-for templates for reactive rendering.
-     */
-    protected function transformBladeLoopsToAlpine(string $html, array $properties, $view): string
-    {
-        \Log::info('[Duo] transformBladeLoopsToAlpine called', [
-            'properties_count' => count($properties),
-            'property_keys' => array_keys($properties),
-            'property_types' => array_map('gettype', $properties),
-        ]);
-
-        // Get the Blade template path
-        $bladePath = $view->getPath();
-        \Log::info('[Duo] Blade template path: '.$bladePath);
-
-        if (! file_exists($bladePath)) {
-            \Log::info('[Duo] Blade template file not found');
-
-            return $html;
-        }
-
-        // Read the Blade template source
-        $bladeSource = file_get_contents($bladePath);
-        \Log::info('[Duo] Blade source length: '.strlen($bladeSource));
-
-        // Find array properties (these are likely from forelse/foreach loops)
-        // Note: Check for both arrays and Collections (Eloquent results)
-        $arrayProperties = [];
-        foreach ($properties as $key => $value) {
-            $isArrayLike = is_array($value) || (is_object($value) && method_exists($value, 'toArray'));
-
-            if ($isArrayLike) {
-                // Convert Collections to arrays
-                $arrayValue = is_array($value) ? $value : $value->toArray();
-
-                // Include ALL array properties, even if empty
-                // Empty arrays still need transformation for reactive updates
-                $arrayProperties[$key] = $arrayValue;
-            }
-        }
-
-        \Log::info('[Duo] Found array properties', ['count' => count($arrayProperties), 'keys' => array_keys($arrayProperties)]);
-
-        if (empty($arrayProperties)) {
-            \Log::info('[Duo] No array properties found - skipping transformation');
-
-            return $html; // No arrays to transform
-        }
-
-        // For each array property, parse the Blade template and transform to Alpine
-        foreach ($arrayProperties as $propName => $items) {
-            $html = $this->convertBladeLoopToAlpine($html, $bladeSource, $propName, $items);
-        }
-
-        return $html;
-    }
-
-    /**
-     * Convert a Blade loop to Alpine x-for by parsing the Blade template source.
-     */
-    protected function convertBladeLoopToAlpine(string $html, string $bladeSource, string $propName, array $items): string
-    {
-        // Note: We must transform even if items is empty
-        // This ensures reactive updates work when items are added later
-
-        // Find @forelse or @foreach block in Blade source
-        // Pattern supports both:
-        // - @foreach($todos as $todo) ... @endforeach (direct or computed)
-        // - @forelse($todos as $todo) ... @empty ... @endforelse (direct or computed)
-        // - Both $todos and $this->todos are supported
-        $foreachPattern = '/@(?:forelse|foreach)\(\$(?:this->)?'.$propName.'\s+as\s+\$(\w+)\)(.*?)@(?:empty|endforelse|endforeach)/s';
-
-        if (! preg_match($foreachPattern, $bladeSource, $bladeMatch)) {
-            \Log::info('[Duo] Could not find @forelse or @foreach for: '.$propName);
-
-            return $html;
-        }
-
-        $itemVarName = $bladeMatch[1]; // e.g., "todo"
-        $bladeTemplate = $bladeMatch[2]; // The content between @forelse and @empty
-
-        \Log::info('[Duo] Found Blade loop', [
-            'propName' => $propName,
-            'itemVarName' => $itemVarName,
-            'template_length' => strlen($bladeTemplate),
-        ]);
-
-        // Find the @empty content
-        $emptyPattern = '/@(?:forelse|foreach)\(\$'.$propName.'\s+as\s+\$\w+\).*?@empty(.*?)@endforelse/s';
-        $emptyContent = '';
-        if (preg_match($emptyPattern, $bladeSource, $emptyMatch)) {
-            $emptyContent = trim($emptyMatch[1]);
-            \Log::info('[Duo] Found @empty content, length: '.strlen($emptyContent));
-        }
-
-        // Find the rendered loop container in HTML
-        // Look for the parent div that wraps the foreach content
-        // We need to match ONLY the div that contains the BLOCK comments
-        // IMPORTANT: Make BLOCK comments required to avoid matching wrong divs
-        $containerPattern = '/(<div[^>]*class="[^"]*(?:flex|space-y|grid)[^"]*"[^>]*>)\s*<!--\[if BLOCK\]><!\[endif\]-->\s*(.*?)\s*<!--\[if ENDBLOCK\]><!\[endif\]-->\s*(<\/div>)/s';
-
-        if (preg_match($containerPattern, $html, $containerMatch)) {
-            \Log::info('[Duo] Found rendered container in HTML', [
-                'matched_html_length' => strlen($containerMatch[0]),
-                'matched_opening_tag' => $containerMatch[1],
-            ]);
-
-            // Transform Blade template to Alpine
-            $alpineTemplate = $this->transformBladeToAlpine($bladeTemplate, $itemVarName);
-
-            // Add x-cloak and x-show="duoReady" to the container div
-            $containerOpenTag = preg_replace('/^(<\w+)/', '$1 x-cloak x-show="duoReady"', $containerMatch[1]);
-
-            // Build the Alpine x-for template
-            $replacement = $containerOpenTag."\n".
-                "    <template x-for=\"{$itemVarName} in {$propName}\" :key=\"{$itemVarName}.id\">\n".
-                '        '.trim($alpineTemplate)."\n".
-                "    </template>\n";
-
-            // Add empty state if we found @empty content
-            if ($emptyContent) {
-                $replacement .= '    '.trim($emptyContent)."\n";
-                // Add x-show to make it conditional
-                $replacement = str_replace(
-                    trim($emptyContent),
-                    preg_replace('/^<(\w+)/', '<$1 x-show="!'.$propName.' || '.$propName.'.length === 0"', trim($emptyContent)),
-                    $replacement
-                );
-            }
-
-            $replacement .= $containerMatch[3]; // closing </div>
-
-            // Use preg_replace instead of str_replace for more reliable matching
-            // This replaces only the FIRST occurrence to avoid affecting other similar divs
-            $html = preg_replace($containerPattern, $replacement, $html, 1);
-            \Log::info('[Duo] Successfully transformed Blade loop to Alpine', [
-                'replacement_length' => strlen($replacement),
-            ]);
-        } else {
-            \Log::info('[Duo] Could not find rendered container in HTML');
-        }
-
-        // Transform Livewire forms to Alpine
-        $html = $this->transformFormsToAlpine($html);
-
-        return $html;
-    }
-
-    /**
-     * Transform Blade template syntax to Alpine.js bindings.
-     */
-    protected function transformBladeToAlpine(string $bladeTemplate, string $itemVarName): string
-    {
-        \Log::info('[Duo] Transforming Blade to Alpine', ['itemVarName' => $itemVarName]);
-
-        $template = $bladeTemplate;
-
-        // 0. Transform Alpine bindings that use Blade variables (e.g., :checked="$todo->completed")
-        // This handles Flux components that already use Alpine syntax
-        $template = preg_replace(
-            '/:(\w+)="\$'.$itemVarName.'->(\w+)"/i',
-            ':$1="'.$itemVarName.'.$2"',
-            $template
-        );
-
-        // 1. Transform wire:click="method({{ $todo->id }})" to Alpine @click with direct method call
-        $template = preg_replace(
-            '/wire:click="(\w+)\(\{\{\s*\$'.$itemVarName.'->id\s*\}\}\)"/i',
-            '@click.prevent="$1('.$itemVarName.'.id)"',
-            $template
-        );
-
-        // Also handle wire:submit with direct method call
-        $template = preg_replace(
-            '/wire:submit(?:\.prevent)?="(\w+)\(\{\{\s*\$'.$itemVarName.'->id\s*\}\}\)"/i',
-            '@submit.prevent="$1('.$itemVarName.'.id)"',
-            $template
-        );
-
-        // Handle wire:submit without parameters (e.g., for addTodo)
-        $template = preg_replace(
-            '/wire:submit(?:\.prevent)?="(\w+)"/i',
-            '@submit.prevent="$1()"',
-            $template
-        );
-
-        // 2. Transform {{ $todo->completed ? 'checked' : '' }} to :checked="todo.completed"
-        $template = preg_replace(
-            '/\{\{\s*\$'.$itemVarName.'->completed\s*\?\s*[\'"]checked[\'"]\s*:\s*[\'"][\'"]\s*\}\}/',
-            ':checked="'.$itemVarName.'.completed"',
-            $template
-        );
-
-        // 3. Transform class="{{ $todo->completed ? 'classes' : '' }}" to :class
-        $template = preg_replace_callback(
-            '/class="([^"]*)\{\{\s*\$'.$itemVarName.'->(\w+)\s*\?\s*[\'"]([^\'"]+)[\'"]\s*:\s*[\'"][\'"]\s*\}\}([^"]*)"/i',
-            function ($matches) use ($itemVarName) {
-                $staticClasses = trim($matches[1].' '.$matches[4]);
-                $conditionalClasses = $matches[3];
-                $property = $matches[2];
-
-                return 'class="'.$staticClasses.'" :class="{ \''.$conditionalClasses.'\': '.$itemVarName.'.'.$property.' }"';
-            },
-            $template
-        );
-
-        // 4. Transform {{ $todo->created_at->diffForHumans() }} FIRST (before general property transform)
-        // Handle any date field with diffForHumans()
-        $template = preg_replace(
-            '/\{\{\s*\$'.$itemVarName.'->(\w+)->diffForHumans\(\)\s*\}\}/',
-            '<span x-text="timeAgo('.$itemVarName.'.$1)"></span>',
-            $template
-        );
-
-        // 5. Transform {{ $todo->title }} to x-text="todo.title" (for text content)
-        $template = preg_replace(
-            '/\{\{\s*\$'.$itemVarName.'->(\w+)\s*\}\}/',
-            '<span x-text="'.$itemVarName.'.$1"></span>',
-            $template
-        );
-
-        // 6. Transform @if($todo->description) to x-show="todo.description"
-        $template = preg_replace(
-            '/@if\(\$'.$itemVarName.'->(\w+)\)(.*?)@endif/s',
-            '<template x-if="'.$itemVarName.'.$1">$2</template>',
-            $template
-        );
-
-        \Log::info('[Duo] Blade to Alpine transformation complete', ['result_length' => strlen($template)]);
-
-        return $template;
-    }
-
-    /**
-     * Transform Livewire forms to use Alpine instead.
-     * Converts wire:submit and wire:model to Alpine equivalents.
-     */
-    protected function transformFormsToAlpine(string $html): string
-    {
-        \Log::info('[Duo] Transforming forms to Alpine');
-
-        // Transform wire:submit="methodName" to @submit.prevent="methodName()"
-        $html = preg_replace(
-            '/wire:submit(?:\.prevent)?="(\w+)"/i',
-            'x-on:submit.prevent="$1()"',
-            $html
-        );
-
-        // Transform wire:model="propertyName" to x-model="propertyName"
-        $html = preg_replace(
-            '/wire:model(?:\.\w+)?="(\w+)"/i',
-            'x-model="$1"',
-            $html
-        );
-
-        // Transform wire:click="methodName" to @click.prevent="methodName()"
-        // (for buttons and other clickable elements outside of loops)
-        $html = preg_replace(
-            '/wire:click(?:\.prevent)?="(\w+)"/i',
-            'x-on:click.prevent="$1()"',
-            $html
-        );
-
-        \Log::info('[Duo] Forms transformed to Alpine');
-
-        return $html;
-    }
-
-    /**
-     * Discover models that use the Duo trait.
-     */
     protected function discoverModels(): void
     {
         $registry = $this->app->make(ModelRegistry::class);
@@ -711,13 +310,92 @@ final class DuoServiceProvider extends ServiceProvider
                 continue;
             }
 
+            // Skip computed properties (methods with Computed attribute)
+            $hasComputedAttribute = false;
+            foreach ($method->getAttributes() as $attribute) {
+                $attributeName = $attribute->getName();
+                if ($attributeName === 'Livewire\Attributes\Computed' ||
+                    str_ends_with($attributeName, '\Computed')) {
+                    $hasComputedAttribute = true;
+                    break;
+                }
+            }
+
+            if ($hasComputedAttribute) {
+                continue;
+            }
+
+            // Extract validation rules from the method
+            $validationRules = $this->extractValidationFromMethod($method, $component);
+
             $methods[] = [
                 'name' => $method->getName(),
                 'parameters' => $method->getParameters(),
+                'validation' => $validationRules,
             ];
         }
 
         return $methods;
+    }
+
+    /**
+     * Extract validation rules from a method by parsing the source code
+     */
+    protected function extractValidationFromMethod(\ReflectionMethod $method, $component): array
+    {
+        $fileName = $method->getFileName();
+        $startLine = $method->getStartLine();
+        $endLine = $method->getEndLine();
+
+        if (! $fileName || ! $startLine || ! $endLine) {
+            return [];
+        }
+
+        // Read the method source
+        $file = new \SplFileObject($fileName);
+        $file->seek($startLine - 1);
+
+        $methodSource = '';
+        for ($i = $startLine; $i <= $endLine; $i++) {
+            $methodSource .= $file->current();
+            $file->next();
+        }
+
+        // Parse validation rules using regex
+        $validationRules = [];
+
+        // Match: $this->validate([...]) - use greedy match to get all content
+        if (preg_match('/\$this->validate\(\s*\[(.+?)\]\s*\)/s', $methodSource, $matches)) {
+            $rulesString = $matches[1];
+
+            // Match: 'field' => ['rule1', 'rule2'] or 'field' => 'rule'
+            // Improved regex to handle nested arrays
+            if (preg_match_all('/[\'"](\w+)[\'"]\s*=>\s*(\[[^\]]*\]|[\'"][^\'\"]*[\'"])/s', $rulesString, $ruleMatches, PREG_SET_ORDER)) {
+                foreach ($ruleMatches as $match) {
+                    $field = $match[1];
+                    $rules = $match[2];
+
+                    // Parse the rules
+                    if (str_starts_with($rules, '[')) {
+                        // Array of rules - extract each rule from the array
+                        preg_match_all('/[\'"]([^\'"]+)[\'"]/', $rules, $ruleItems);
+                        $validationRules[$field] = $ruleItems[1];
+                    } else {
+                        // Single rule string
+                        $rule = trim($rules, '\'"');
+                        $validationRules[$field] = explode('|', $rule);
+                    }
+                }
+            }
+        }
+
+        \Log::info('[Duo] Extracted validation rules', [
+            'method' => $method->getName(),
+            'rules' => $validationRules,
+            'methodSource' => substr($methodSource, 0, 500),
+        ]);
+
+        return $validationRules;
     }
 
     /**
@@ -764,14 +442,8 @@ final class DuoServiceProvider extends ServiceProvider
                             $value = $value->get();
                         }
 
-                        if ($value instanceof \Illuminate\Database\Eloquent\Collection) {
-                            // Convert collection to array for JSON serialization
-                            $value = $value->toArray();
-                        } elseif ($value instanceof \Illuminate\Database\Eloquent\Model) {
-                            // Convert single model to array
-                            $value = $value->toArray();
-                        }
-
+                        // Keep models and collections as objects for transformation
+                        // They will be converted to arrays during Alpine x-data generation
                         $computed[$propertyName] = $value;
                         \Log::info("[Duo] Extracted computed property: $propertyName", ['type' => gettype($value)]);
                     }
@@ -986,10 +658,11 @@ final class DuoServiceProvider extends ServiceProvider
         \Log::info('[Duo] Extracted ORDER BY', ['orderBy' => $orderBy]);
 
         // Extract form field properties (exclude arrays/collections which are the data lists)
+        // Only include STRING properties as form fields (exclude booleans, integers, etc.)
         $formFields = [];
         foreach ($data as $key => $value) {
-            if (! is_array($value) && ! (is_object($value) && method_exists($value, 'toArray'))) {
-                // This is a scalar property, likely a form field
+            if (is_string($value)) {
+                // This is a string property, likely a form field
                 if (! str_starts_with($key, '$') && $key !== 'id') {
                     $formFields[] = $key;
                 }
@@ -1010,6 +683,22 @@ final class DuoServiceProvider extends ServiceProvider
                 $paramList[] = $param->getName();
             }
             $paramString = implode(', ', $paramList);
+
+            // Skip methods with no parameters or non-model parameters (like toggleComparison)
+            // Only generate CRUD methods for methods that accept model instances
+            $hasModelParameter = false;
+            foreach ($params as $param) {
+                $type = $param->getType();
+                if ($type && ! $type->isBuiltin()) {
+                    $hasModelParameter = true;
+                    break;
+                }
+            }
+
+            // Skip if this method doesn't operate on a model (e.g., toggleComparison())
+            if (! $hasModelParameter && (str_starts_with($methodName, 'toggle') || str_starts_with($methodName, 'update'))) {
+                continue;
+            }
 
             // Determine operation based on method naming convention
             if (str_starts_with($methodName, 'add') || str_starts_with($methodName, 'create')) {
@@ -1171,8 +860,15 @@ final class DuoServiceProvider extends ServiceProvider
     protected function registerBladeDirectives(): void
     {
         // @duoMeta - Injects the cache meta tag for offline page caching and CSRF token
+        // Only enables offline caching if the page has a component with the WithDuo trait
         \Blade::directive('duoMeta', function () {
-            return '<?php echo \'<meta name="csrf-token" content="\' . csrf_token() . \'">\' . "\n" . \'<meta name="duo-cache" content="true" data-duo-version="1.0">\'; ?>';
+            return '<?php
+                echo \'<meta name="csrf-token" content="\' . csrf_token() . \'">\';
+                // Only add duo-cache meta tag if page has a Duo-enabled component
+                if (app()->has(\'duo.has_enabled_component\') && app(\'duo.has_enabled_component\')) {
+                    echo "\n" . \'<meta name="duo-cache" content="true" data-duo-version="1.0">\';
+                }
+            ?>';
         });
     }
 }

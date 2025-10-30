@@ -1,6 +1,7 @@
 import { DuoDatabase, type DuoConfig, type DuoRecord } from './core/database';
 import { SyncQueue, type SyncQueueConfig } from './sync/queue';
 import { ServiceWorkerManager, type ServiceWorkerConfig } from './offline/service-worker-manager';
+import { liveQuery } from 'dexie';
 
 export interface DuoClientConfig {
   manifest?: Record<string, any>;
@@ -70,6 +71,16 @@ export class DuoClient {
       onSyncSuccess: (operation) => {
         if (this.config.debug) {
           console.log('[Duo] Sync successful:', operation);
+        }
+
+        // Dispatch browser event for Alpine components
+        window.dispatchEvent(new CustomEvent('duo-synced', {
+          detail: { operation },
+        }));
+
+        // Dispatch Livewire event for Livewire components
+        if (typeof window !== 'undefined' && (window as any).Livewire) {
+          (window as any).Livewire.dispatch('duo-synced', { operation });
         }
       },
       onSyncError: (operation, error) => {
@@ -168,6 +179,13 @@ export class DuoClient {
    */
   getServiceWorkerManager(): ServiceWorkerManager | undefined {
     return this.serviceWorkerManager;
+  }
+
+  /**
+   * Get liveQuery for reactive queries
+   */
+  liveQuery<T>(querier: () => T | Promise<T>) {
+    return liveQuery(querier);
   }
 
   /**

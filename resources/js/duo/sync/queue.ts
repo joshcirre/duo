@@ -108,7 +108,7 @@ export class SyncQueue {
     const store = this.db.getStore(operation.storeName);
     if (store) {
       await store.update(operation.data, {
-        _duo_pending_sync: true,
+        _duo_pending_sync: 1,
         _duo_operation: operation.operation,
       });
     }
@@ -154,7 +154,7 @@ export class SyncQueue {
           const store = this.db.getStore(operation.storeName);
           if (store && operation.operation !== 'delete') {
             await store.update(operation.data, {
-              _duo_pending_sync: false,
+              _duo_pending_sync: 0,
               _duo_synced_at: Date.now(),
             });
           }
@@ -228,7 +228,7 @@ export class SyncQueue {
         // Add the server record (without pending flag)
         await store.put({
           ...serverData,
-          _duo_pending_sync: false,
+          _duo_pending_sync: 0,
           _duo_synced_at: Date.now(),
         });
       }

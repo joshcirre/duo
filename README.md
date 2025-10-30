@@ -522,6 +522,57 @@ const pending = syncQueue.getPendingOperations();
 await syncQueue.processQueue();
 ```
 
+### Listen for Sync Events
+
+Duo dispatches a `duo-synced` event whenever a sync operation completes successfully. You can listen for this event to trigger custom behavior:
+
+**Livewire Components:**
+
+```php
+use Livewire\Attributes\On;
+
+#[On('duo-synced')]
+public function handleSyncComplete()
+{
+    // Refresh data, show notification, etc.
+    $this->dispatch('notify', message: 'Changes synced!');
+}
+```
+
+**Alpine Components:**
+
+```javascript
+// Using Alpine's @event directive
+<div @duo-synced.window="handleSync($event.detail)">
+    <!-- Your component -->
+</div>
+
+// Or in Alpine x-data
+x-data="{
+    init() {
+        window.addEventListener('duo-synced', (event) => {
+            console.log('Sync completed:', event.detail.operation);
+            // event.detail.operation contains: id, storeName, operation, data, timestamp
+        });
+    }
+}"
+```
+
+**Vanilla JavaScript:**
+
+```javascript
+window.addEventListener('duo-synced', (event) => {
+    const { operation } = event.detail;
+    console.log('Synced:', operation.storeName, operation.operation);
+});
+```
+
+This is particularly useful for:
+- Refreshing server-side data displays after sync
+- Showing toast notifications when changes are saved
+- Tracking sync analytics
+- Updating UI elements that show server state
+
 ### Access Sync Status in Custom Components
 
 ```javascript

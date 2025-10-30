@@ -306,6 +306,58 @@ Ensure compatibility with Livewire v4 when released.
 
 ## 🚧 In Progress
 
+### Dexie liveQuery Integration
+Replace polling with reactive Dexie liveQuery for automatic UI updates.
+
+**Status:** 🚧 In Progress (Sync Status ✅ Complete, Main Transformations 📋 Planned)
+**Complexity:** Medium
+
+**Completed:**
+- ✅ Sync status component uses liveQuery to count pending operations (no polling!)
+- ✅ Comparison view demo uses liveQuery for IndexedDB display
+- ✅ Multi-tab sync works for free (same user, different browser tabs)
+
+**Planned:**
+- 📋 Update BladeToAlpineTransformer to generate liveQuery subscriptions instead of duoSync() calls
+- 📋 Remove manual polling from generated Alpine components
+- 📋 Automatic reactivity for all transformed components
+
+**Current Approach (Manual Polling):**
+```javascript
+async duoSync() {
+    this.todos = await store.toArray(); // Manual refresh
+}
+
+async createTodo() {
+    await store.add(record);
+    await this.duoSync(); // Must manually refresh
+}
+```
+
+**Proposed Approach (Reactive liveQuery):**
+```javascript
+init() {
+    // Set up reactive subscription once
+    Dexie.liveQuery(() => store.toArray())
+        .subscribe(todos => this.todos = todos);
+}
+
+async createTodo() {
+    await store.add(record);
+    // UI auto-updates via liveQuery! No manual call needed
+}
+```
+
+**Benefits:**
+- 🔥 Multi-tab sync for free (same device, different tabs see instant updates)
+- ✨ Cleaner generated code (no duoSync() scattered everywhere)
+- ⚡ More efficient (no manual polling intervals)
+- 🎯 Automatically reactive to any IndexedDB change
+
+**Note:** liveQuery handles **IndexedDB → Alpine UI reactivity** only. Server sync (IndexedDB → Server) remains handled by the existing SyncQueue with custom API endpoints.
+
+---
+
 ### Database Schema Extraction & TypeScript Types
 Auto-generate schema information and TypeScript types from Eloquent models.
 
