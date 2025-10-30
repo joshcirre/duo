@@ -28,18 +28,21 @@ namespace JoshCirre\Duo;
  * }
  * ```
  *
- * Advanced usage with custom configuration:
+ * Advanced usage with type-safe configuration:
  * ```php
+ * use JoshCirre\Duo\{WithDuo, DuoConfig};
+ *
  * class TodoList extends Component
  * {
  *     use WithDuo;
  *
- *     protected function duoConfig(): array
+ *     protected function duoConfig(): DuoConfig
  *     {
- *         return [
- *             'timestampRefreshInterval' => 5000, // Refresh every 5 seconds
- *             'debug' => true, // Enable debug logging
- *         ];
+ *         return DuoConfig::make(
+ *             syncInterval: 3000,
+ *             timestampRefreshInterval: 5000,
+ *             debug: true
+ *         );
  *     }
  * }
  * ```
@@ -52,23 +55,10 @@ trait WithDuo
      * Override this method to customize Duo behavior for this component.
      * Component config takes precedence over global config (config/duo.php).
      *
-     * Available options:
-     * - syncInterval (int): Milliseconds between sync attempts (default: from config/duo.php or 5000)
-     * - timestampRefreshInterval (int): Milliseconds between timestamp updates (default: from config/duo.php or 10000)
-     * - maxRetryAttempts (int): Maximum retry attempts for failed syncs (default: from config/duo.php or 3)
-     * - debug (bool): Enable verbose console logging (default: from config/duo.php or false)
-     *
-     * @return array<string, mixed>
+     * Use DuoConfig::make() for full IDE autocomplete and type safety.
      */
-    protected function duoConfig(): array
+    protected function duoConfig(): DuoConfig
     {
-        return [
-            // All options are optional - defaults come from config/duo.php
-            // Uncomment and customize as needed:
-            // 'syncInterval' => 5000,
-            // 'timestampRefreshInterval' => 10000,
-            // 'maxRetryAttempts' => 3,
-            // 'debug' => false,
-        ];
+        return DuoConfig::make();
     }
 }

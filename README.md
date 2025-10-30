@@ -476,24 +476,25 @@ return [
 
 ### Component-Level Configuration
 
-You can customize Duo's behavior on a per-component basis by defining a `duoConfig()` method in your component:
+You can customize Duo's behavior on a per-component basis using the type-safe `DuoConfig` class. This provides **full IDE autocomplete and type checking**!
 
 **Volt Component:**
 ```php
 <?php
 use Livewire\Volt\Component;
-use JoshCirre\Duo\WithDuo;
+use JoshCirre\Duo\{WithDuo, DuoConfig};
 
 new class extends Component {
     use WithDuo;
 
-    // Override default Duo configuration for this component
-    protected function duoConfig(): array
+    // Type-safe configuration with IDE autocomplete!
+    protected function duoConfig(): DuoConfig
     {
-        return [
-            'timestampRefreshInterval' => 5000, // Refresh every 5 seconds (default: 10000)
-            'debug' => true, // Enable debug logging (default: false)
-        ];
+        return DuoConfig::make(
+            syncInterval: 3000,
+            timestampRefreshInterval: 5000,
+            debug: true
+        );
     }
 
     // ... rest of your component
@@ -507,18 +508,18 @@ new class extends Component {
 namespace App\Livewire;
 
 use Livewire\Component;
-use JoshCirre\Duo\WithDuo;
+use JoshCirre\Duo\{WithDuo, DuoConfig};
 
 class TodoList extends Component
 {
     use WithDuo;
 
-    protected function duoConfig(): array
+    protected function duoConfig(): DuoConfig
     {
-        return [
-            'timestampRefreshInterval' => 30000, // Refresh every 30 seconds
-            'debug' => false,
-        ];
+        return DuoConfig::make(
+            timestampRefreshInterval: 30000,
+            maxRetryAttempts: 5
+        );
     }
 
     // ... rest of your component
@@ -544,16 +545,23 @@ Component duoConfig() > Global config/duo.php > Hardcoded defaults
 
 **Example with all options:**
 ```php
-protected function duoConfig(): array
+protected function duoConfig(): DuoConfig
 {
-    return [
-        'syncInterval' => 3000,              // Sync every 3 seconds
-        'timestampRefreshInterval' => 5000,  // Refresh timestamps every 5 seconds
-        'maxRetryAttempts' => 5,             // Retry failed syncs 5 times
-        'debug' => true,                     // Enable debug logging
-    ];
+    return DuoConfig::make(
+        syncInterval: 3000,              // Sync every 3 seconds
+        timestampRefreshInterval: 5000,  // Refresh timestamps every 5 seconds
+        maxRetryAttempts: 5,             // Retry failed syncs 5 times
+        debug: true                      // Enable debug logging
+    );
 }
 ```
+
+**Benefits of Type-Safe Config:**
+- ✅ **IDE Autocomplete**: Your IDE shows all available options as you type
+- ✅ **Type Checking**: PHP will catch typos and wrong types at runtime
+- ✅ **Validation**: Invalid values (like negative numbers) throw clear exceptions
+- ✅ **Documentation**: Hover over parameters in your IDE to see descriptions
+- ✅ **Refactoring**: Rename config options safely across your entire codebase
 
 **Why Component-Level Config?**
 

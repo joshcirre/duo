@@ -77,8 +77,10 @@ class BladeToAlpineTransformer
         if (method_exists($this->component, 'duoConfig')) {
             try {
                 $componentConfig = $this->component->duoConfig();
-                if (is_array($componentConfig)) {
-                    $config = array_merge($config, $componentConfig);
+
+                // Handle DuoConfig object
+                if ($componentConfig instanceof DuoConfig) {
+                    $config = array_merge($config, $componentConfig->toArray());
                 }
             } catch (\Exception $e) {
                 \Log::warning('[Duo] Failed to get duoConfig from component', [
