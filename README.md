@@ -452,6 +452,8 @@ Duo uses a sophisticated local-first architecture that transforms your Livewire 
 
 ## Configuration
 
+### Global Configuration
+
 Publish the configuration file:
 
 ```bash
@@ -471,6 +473,102 @@ return [
     'auto_discover' => env('DUO_AUTO_DISCOVER', true),
 ];
 ```
+
+### Component-Level Configuration
+
+You can customize Duo's behavior on a per-component basis by defining a `duoConfig()` method in your component:
+
+**Volt Component:**
+```php
+<?php
+use Livewire\Volt\Component;
+use JoshCirre\Duo\WithDuo;
+
+new class extends Component {
+    use WithDuo;
+
+    // Override default Duo configuration for this component
+    protected function duoConfig(): array
+    {
+        return [
+            'timestampRefreshInterval' => 5000, // Refresh every 5 seconds (default: 10000)
+            'debug' => true, // Enable debug logging (default: false)
+        ];
+    }
+
+    // ... rest of your component
+}
+```
+
+**Class-Based Component:**
+```php
+<?php
+
+namespace App\Livewire;
+
+use Livewire\Component;
+use JoshCirre\Duo\WithDuo;
+
+class TodoList extends Component
+{
+    use WithDuo;
+
+    protected function duoConfig(): array
+    {
+        return [
+            'timestampRefreshInterval' => 30000, // Refresh every 30 seconds
+            'debug' => false,
+        ];
+    }
+
+    // ... rest of your component
+}
+```
+
+**Available Configuration Options:**
+
+All options can be set globally in `config/duo.php` and overridden per-component in `duoConfig()`:
+
+| Option | Type | Default | Global Config | Component Override | Description |
+|--------|------|---------|---------------|-------------------|-------------|
+| `syncInterval` | int | 5000 | `duo.sync_interval` | `syncInterval` | Milliseconds between sync attempts to server. Controls how often pending changes are sent. |
+| `timestampRefreshInterval` | int | 10000 | `duo.timestamp_refresh_interval` | `timestampRefreshInterval` | Milliseconds between timestamp updates. Controls how often relative times like "5 minutes ago" refresh. |
+| `maxRetryAttempts` | int | 3 | `duo.max_retry_attempts` | `maxRetryAttempts` | Maximum number of retry attempts for failed sync operations before giving up. |
+| `debug` | bool | false | `duo.debug` | `debug` | Enable verbose console logging. Useful for debugging transformation and sync issues. |
+
+**Configuration Priority:**
+
+```
+Component duoConfig() > Global config/duo.php > Hardcoded defaults
+```
+
+**Example with all options:**
+```php
+protected function duoConfig(): array
+{
+    return [
+        'syncInterval' => 3000,              // Sync every 3 seconds
+        'timestampRefreshInterval' => 5000,  // Refresh timestamps every 5 seconds
+        'maxRetryAttempts' => 5,             // Retry failed syncs 5 times
+        'debug' => true,                     // Enable debug logging
+    ];
+}
+```
+
+**Why Component-Level Config?**
+
+Component-level configuration allows you to:
+- 🎯 **Fine-tune performance**: High-traffic pages can sync less frequently or refresh timestamps slower
+- 🐛 **Debug specific components**: Enable debug mode only where you need it
+- 📱 **Mobile optimization**: Adjust sync and refresh rates based on device capabilities
+- 🎨 **User experience**: Customize behavior for different types of content
+- ⚡ **Critical components**: Increase sync frequency for time-sensitive data
+
+**Global vs Component Config:**
+- **Global** (`config/duo.php`): Sets application-wide defaults, configured via environment variables
+- **Component** (`duoConfig()`): Overrides for specific components, set in code
+
+This architecture provides flexibility while maintaining sensible defaults across your entire application.
 
 ## Advanced Usage
 

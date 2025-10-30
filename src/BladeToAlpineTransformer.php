@@ -27,6 +27,8 @@ class BladeToAlpineTransformer
 
     protected object $component;
 
+    protected array $duoConfig;
+
     public function __construct(
         string $bladeSource,
         string $renderedHtml,
@@ -40,6 +42,52 @@ class BladeToAlpineTransformer
         $this->componentData = $componentData;
         $this->componentMethods = $componentMethods;
         $this->component = $component;
+
+        // Extract Duo configuration from component if available
+        $this->duoConfig = $this->extractDuoConfig();
+    }
+
+    /**
+     * Extract Duo configuration from the component
+     *
+     * Priority: Component duoConfig() > Global config/duo.php > Hardcoded defaults
+     */
+    protected function extractDuoConfig(): array
+    {
+        // Hardcoded defaults (lowest priority)
+        $defaults = [
+            'syncInterval' => 5000,
+            'timestampRefreshInterval' => 10000,
+            'maxRetryAttempts' => 3,
+            'debug' => false,
+        ];
+
+        // Global config (medium priority)
+        $globalConfig = [
+            'syncInterval' => config('duo.sync_interval', 5000),
+            'timestampRefreshInterval' => config('duo.timestamp_refresh_interval', 10000),
+            'maxRetryAttempts' => config('duo.max_retry_attempts', 3),
+            'debug' => config('duo.debug', false),
+        ];
+
+        // Start with defaults, merge global
+        $config = array_merge($defaults, $globalConfig);
+
+        // Component config (highest priority)
+        if (method_exists($this->component, 'duoConfig')) {
+            try {
+                $componentConfig = $this->component->duoConfig();
+                if (is_array($componentConfig)) {
+                    $config = array_merge($config, $componentConfig);
+                }
+            } catch (\Exception $e) {
+                \Log::warning('[Duo] Failed to get duoConfig from component', [
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+
+        return $config;
     }
 
     /**
@@ -329,7 +377,15 @@ class BladeToAlpineTransformer
             $sampleItem = $sampleItem->toArray();
         }
 
-        // Replace actual values with Alpine x-text bindings
+        // Step 1: Find and transform Carbon date method calls in the Blade source
+        $dateMethodMappings = $this->findDateMethodCalls($itemVarName, $sampleItem);
+
+        // Step 2: Replace date method outputs with Alpine helper calls
+        foreach ($dateMethodMappings as $mapping) {
+            $html = $this->replaceDateMethodInHtml($html, $mapping);
+        }
+
+        // Step 3: Replace actual values with Alpine x-text bindings (for non-date fields)
         foreach ($sampleItem as $key => $value) {
             if (is_string($value) || is_numeric($value)) {
                 $escapedValue = preg_quote(htmlspecialchars((string) $value), '/');
@@ -342,12 +398,121 @@ class BladeToAlpineTransformer
             }
         }
 
-        // Replace wire:click with Alpine @click
+        // Step 4: Replace wire:click with Alpine @click
         // Match wire:click="method(...)" and replace entire parameter with item variable
         $html = preg_replace(
             '/wire:click="([a-zA-Z_]\w*)\(.*?\)"/',
             '@click="$1('.$itemVarName.')"',
             $html
+        );
+
+        return $html;
+    }
+
+    /**
+     * Find Carbon date method calls in the Blade source
+     * Returns array of mappings: ['rendered_value' => ..., 'alpine_expression' => ...]
+     */
+    protected function findDateMethodCalls(string $itemVarName, mixed $sampleItem): array
+    {
+        $mappings = [];
+        $bladeSource = $this->bladeDocument->toString();
+
+        // Common Carbon methods to detect
+        $carbonMethods = [
+            'diffForHumans' => [],
+            'format' => ['arg'],
+            'toDateString' => [],
+            'toTimeString' => [],
+            'toDateTimeString' => [],
+            'toFormattedDateString' => [],
+        ];
+
+        // Find all echo expressions in the Blade source {{ ... }}
+        preg_match_all('/\{\{\s*\$'.$itemVarName.'->(\w+)->(\w+)\((.*?)\)\s*\}\}/', $bladeSource, $matches, PREG_SET_ORDER);
+
+        foreach ($matches as $match) {
+            $fieldName = $match[1]; // e.g., "created_at"
+            $methodName = $match[2]; // e.g., "diffForHumans"
+            $methodArgs = trim($match[3]); // e.g., "'Y-m-d'" or empty
+
+            // Check if this is a known Carbon method
+            if (! isset($carbonMethods[$methodName])) {
+                continue;
+            }
+
+            // Get the rendered value from the sample item
+            if (! isset($sampleItem[$fieldName])) {
+                continue;
+            }
+
+            $fieldValue = $sampleItem[$fieldName];
+
+            // Try to render the method call to get the output value
+            try {
+                if (is_string($fieldValue)) {
+                    // Parse as Carbon date
+                    $date = \Carbon\Carbon::parse($fieldValue);
+                } elseif ($fieldValue instanceof \Carbon\Carbon) {
+                    $date = $fieldValue;
+                } else {
+                    continue;
+                }
+
+                // Call the method to get the rendered value
+                if ($methodArgs) {
+                    // Remove quotes from argument
+                    $cleanArgs = trim($methodArgs, '\'"');
+                    $renderedValue = $date->$methodName($cleanArgs);
+                    // Add _now dependency for reactivity
+                    $alpineExpression = "{$methodName}({$itemVarName}.{$fieldName}, '{$cleanArgs}', _now)";
+                } else {
+                    $renderedValue = $date->$methodName();
+                    // Add _now dependency for reactivity
+                    $alpineExpression = "{$methodName}({$itemVarName}.{$fieldName}, _now)";
+                }
+
+                $mappings[] = [
+                    'rendered_value' => $renderedValue,
+                    'alpine_expression' => $alpineExpression,
+                    'field_name' => $fieldName,
+                    'method_name' => $methodName,
+                ];
+
+                \Log::info('[Duo] Detected Carbon date method', [
+                    'field' => $fieldName,
+                    'method' => $methodName,
+                    'rendered' => $renderedValue,
+                    'alpine' => $alpineExpression,
+                ]);
+            } catch (\Exception $e) {
+                \Log::warning('[Duo] Failed to parse date field', [
+                    'field' => $fieldName,
+                    'error' => $e->getMessage(),
+                ]);
+                continue;
+            }
+        }
+
+        return $mappings;
+    }
+
+    /**
+     * Replace a date method's rendered output with Alpine x-text binding
+     */
+    protected function replaceDateMethodInHtml(string $html, array $mapping): string
+    {
+        $renderedValue = htmlspecialchars($mapping['rendered_value']);
+        $alpineExpression = $mapping['alpine_expression'];
+        $escapedValue = preg_quote($renderedValue, '/');
+
+        // Find the rendered value in the HTML and wrap it with x-text
+        // Look for the value inside tags
+        $html = preg_replace(
+            '/>(\s*)'.$escapedValue.'(\s*)</s',
+            ' x-text="'.$alpineExpression.'">$1$2<',
+            $html,
+            1
         );
 
         return $html;
@@ -554,6 +719,12 @@ class BladeToAlpineTransformer
         $parts[] = 'duoLoading: true';
         $parts[] = 'duoReady: false';
 
+        // Add reactive timestamp property for auto-updating relative times
+        $parts[] = '_now: Date.now()';
+
+        // Add Duo configuration
+        $parts[] = '_duoConfig: '.json_encode($this->duoConfig);
+
         // Add errors object for validation
         $parts[] = 'errors: {}';
 
@@ -721,8 +892,7 @@ class BladeToAlpineTransformer
                     }
                 });
 
-                // Refresh data from IndexedDB
-                await this.duoSync();
+                // UI will auto-update via liveQuery (no manual sync needed)
             } catch (err) {
                 console.error('[Duo] Failed to create record:', err);
             }
@@ -777,8 +947,7 @@ class BladeToAlpineTransformer
                     });
                 }
 
-                // Refresh data from IndexedDB
-                await this.duoSync();
+                // UI will auto-update via liveQuery (no manual sync needed)
             } catch (err) {
                 console.error('[Duo] Failed to update record:', err);
             }
@@ -829,8 +998,7 @@ class BladeToAlpineTransformer
                     });
                 }
 
-                // Refresh data from IndexedDB
-                await this.duoSync();
+                // UI will auto-update via liveQuery (no manual sync needed)
             } catch (err) {
                 console.error('[Duo] Failed to delete record:', err);
             }
@@ -967,10 +1135,155 @@ class BladeToAlpineTransformer
         // Generate setupLiveQuery - sets up reactive subscriptions for multi-tab sync
         $methods['setupLiveQuery'] = $this->generateSetupLiveQueryMethod();
 
+        // Generate timestamp refresh method for reactive timestamps
+        $methods['setupTimestampRefresh'] = $this->generateSetupTimestampRefreshMethod();
+
+        // Generate date formatting helpers (for Carbon-style methods)
+        $methods['diffForHumans'] = $this->generateDiffForHumansMethod();
+        $methods['format'] = $this->generateFormatDateMethod();
+        $methods['toDateString'] = $this->generateToDateStringMethod();
+        $methods['toTimeString'] = $this->generateToTimeStringMethod();
+        $methods['toDateTimeString'] = $this->generateToDateTimeStringMethod();
+        $methods['toFormattedDateString'] = $this->generateToFormattedDateStringMethod();
+
         // Generate init method
         $methods['init'] = $this->generateInitMethod();
 
         return $methods;
+    }
+
+    /**
+     * Generate diffForHumans method for Carbon-style date formatting
+     */
+    protected function generateDiffForHumansMethod(): string
+    {
+        return "diffForHumans(date, _nowParam = null) {
+            if (!date) return '';
+
+            // _nowParam is used to make Alpine reactive to _now changes
+            // We use the actual current time for calculation
+            const now = new Date();
+            const then = new Date(date);
+            const seconds = Math.floor((now - then) / 1000);
+
+            if (seconds < 5) return 'just now';
+            if (seconds < 60) return seconds + ' seconds ago';
+
+            const minutes = Math.floor(seconds / 60);
+            if (minutes < 60) return minutes === 1 ? '1 minute ago' : minutes + ' minutes ago';
+
+            const hours = Math.floor(minutes / 60);
+            if (hours < 24) return hours === 1 ? '1 hour ago' : hours + ' hours ago';
+
+            const days = Math.floor(hours / 24);
+            if (days < 7) return days === 1 ? '1 day ago' : days + ' days ago';
+
+            const weeks = Math.floor(days / 7);
+            if (weeks < 4) return weeks === 1 ? '1 week ago' : weeks + ' weeks ago';
+
+            const months = Math.floor(days / 30);
+            if (months < 12) return months === 1 ? '1 month ago' : months + ' months ago';
+
+            const years = Math.floor(days / 365);
+            return years === 1 ? '1 year ago' : years + ' years ago';
+        }";
+    }
+
+    /**
+     * Generate format method for generic date formatting
+     */
+    protected function generateFormatDateMethod(): string
+    {
+        return "format(date, formatString = 'Y-m-d', _nowParam = null) {
+            if (!date) return '';
+
+            const d = new Date(date);
+
+            // Convert PHP date format to JavaScript
+            const year = d.getFullYear();
+            const month = String(d.getMonth() + 1).padStart(2, '0');
+            const day = String(d.getDate()).padStart(2, '0');
+            const hours = String(d.getHours()).padStart(2, '0');
+            const minutes = String(d.getMinutes()).padStart(2, '0');
+            const seconds = String(d.getSeconds()).padStart(2, '0');
+
+            // Map common PHP date formats to JavaScript output
+            const formats = {
+                'Y-m-d': `\${year}-\${month}-\${day}`,
+                'Y-m-d H:i:s': `\${year}-\${month}-\${day} \${hours}:\${minutes}:\${seconds}`,
+                'd/m/Y': `\${day}/\${month}/\${year}`,
+                'm/d/Y': `\${month}/\${day}/\${year}`,
+            };
+
+            if (formats[formatString]) {
+                return eval('`' + formats[formatString] + '`');
+            }
+
+            // Handle named formats
+            if (formatString === 'short') return d.toLocaleDateString();
+            if (formatString === 'long') return d.toLocaleString();
+
+            // Default: return ISO string
+            return d.toISOString();
+        }";
+    }
+
+    /**
+     * Generate JavaScript method for toDateString
+     */
+    protected function generateToDateStringMethod(): string
+    {
+        return "toDateString(date, _nowParam = null) {
+            if (!date) return '';
+            const d = new Date(date);
+            return d.toDateString();
+        }";
+    }
+
+    /**
+     * Generate JavaScript method for toTimeString
+     */
+    protected function generateToTimeStringMethod(): string
+    {
+        return "toTimeString(date, _nowParam = null) {
+            if (!date) return '';
+            const d = new Date(date);
+            return d.toTimeString().split(' ')[0]; // Return just the time part
+        }";
+    }
+
+    /**
+     * Generate JavaScript method for toDateTimeString
+     */
+    protected function generateToDateTimeStringMethod(): string
+    {
+        return "toDateTimeString(date, _nowParam = null) {
+            if (!date) return '';
+            const d = new Date(date);
+            const year = d.getFullYear();
+            const month = String(d.getMonth() + 1).padStart(2, '0');
+            const day = String(d.getDate()).padStart(2, '0');
+            const hours = String(d.getHours()).padStart(2, '0');
+            const minutes = String(d.getMinutes()).padStart(2, '0');
+            const seconds = String(d.getSeconds()).padStart(2, '0');
+            return `\${year}-\${month}-\${day} \${hours}:\${minutes}:\${seconds}`;
+        }";
+    }
+
+    /**
+     * Generate JavaScript method for toFormattedDateString
+     */
+    protected function generateToFormattedDateStringMethod(): string
+    {
+        return "toFormattedDateString(date, _nowParam = null) {
+            if (!date) return '';
+            const d = new Date(date);
+            return d.toLocaleDateString(undefined, {
+                year: 'numeric',
+                month: 'short',
+                day: 'numeric'
+            });
+        }";
     }
 
     /**
@@ -1152,11 +1465,13 @@ class BladeToAlpineTransformer
     protected function generateInitMethod(): string
     {
         return "async init() {
-            console.log('[Duo] Initializing component with Duo...');
+            const debug = this._duoConfig?.debug || false;
+
+            if (debug) console.log('[Duo] Initializing component with Duo...', this._duoConfig);
 
             // Wait for Duo client to be ready
             if (!window.duo) {
-                console.warn('[Duo] Duo client not found, waiting...');
+                if (debug) console.warn('[Duo] Duo client not found, waiting...');
                 await new Promise(resolve => {
                     const checkDuo = setInterval(() => {
                         if (window.duo) {
@@ -1189,15 +1504,45 @@ class BladeToAlpineTransformer
                 // Set up liveQuery for real-time multi-tab sync
                 this.setupLiveQuery();
 
+                // Set up timestamp refresh timer
+                this.setupTimestampRefresh();
+
                 // Mark as ready
                 this.duoLoading = false;
                 this.duoReady = true;
 
-                console.log('[Duo] Component initialized and ready');
+                if (debug) console.log('[Duo] Component initialized and ready');
             } catch (err) {
                 console.error('[Duo] Failed to initialize component:', err);
                 this.duoLoading = false;
             }
+        }";
+    }
+
+    /**
+     * Generate method to set up timestamp refresh timer
+     */
+    protected function generateSetupTimestampRefreshMethod(): string
+    {
+        return "setupTimestampRefresh() {
+            // Update _now at configured interval to refresh relative timestamps
+            // This makes 'just now' turn into '1 minute ago' automatically
+            const interval = this._duoConfig?.timestampRefreshInterval || 10000;
+
+            if (this._duoConfig?.debug) {
+                console.log('[Duo] Setting up timestamp refresh every', interval, 'ms');
+            }
+
+            const refreshInterval = setInterval(() => {
+                this._now = Date.now();
+                if (this._duoConfig?.debug) {
+                    console.log('[Duo] Timestamps refreshed at', new Date(this._now).toISOString());
+                }
+            }, interval);
+
+            // Clean up on destroy
+            if (!this._intervals) this._intervals = [];
+            this._intervals.push(refreshInterval);
         }";
     }
 }

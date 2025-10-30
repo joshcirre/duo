@@ -56,6 +56,18 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Timestamp Refresh Interval
+    |--------------------------------------------------------------------------
+    |
+    | How often (in milliseconds) to refresh relative timestamps like
+    | "5 minutes ago" in the UI. Set to 0 to disable auto-refresh.
+    | Can be overridden per-component via duoConfig().
+    |
+    */
+    'timestamp_refresh_interval' => env('DUO_TIMESTAMP_REFRESH_INTERVAL', 10000),
+
+    /*
+    |--------------------------------------------------------------------------
     | Cache TTL
     |--------------------------------------------------------------------------
     |
@@ -71,6 +83,7 @@ return [
     |--------------------------------------------------------------------------
     |
     | Enable verbose logging for debugging purposes.
+    | Can be overridden per-component via duoConfig().
     |
     */
     'debug' => env('DUO_DEBUG', false),

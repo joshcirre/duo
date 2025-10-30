@@ -304,44 +304,32 @@ Ensure compatibility with Livewire v4 when released.
 
 ---
 
-## 🚧 In Progress
+## ✅ Recently Completed
 
 ### Dexie liveQuery Integration
 Replace polling with reactive Dexie liveQuery for automatic UI updates.
 
-**Status:** 🚧 In Progress (Sync Status ✅ Complete, Main Transformations 📋 Planned)
+**Status:** ✅ Complete
+**Completed:** 2025-01-30
 **Complexity:** Medium
 
-**Completed:**
+**Implemented:**
 - ✅ Sync status component uses liveQuery to count pending operations (no polling!)
 - ✅ Comparison view demo uses liveQuery for IndexedDB display
-- ✅ Multi-tab sync works for free (same user, different browser tabs)
+- ✅ Multi-tab sync works automatically (same user, different browser tabs)
+- ✅ BladeToAlpineTransformer generates liveQuery subscriptions for all collections
+- ✅ Removed redundant `duoSync()` calls from CRUD methods
+- ✅ 50% performance improvement (1 query instead of 2 per operation)
 
-**Planned:**
-- 📋 Update BladeToAlpineTransformer to generate liveQuery subscriptions instead of duoSync() calls
-- 📋 Remove manual polling from generated Alpine components
-- 📋 Automatic reactivity for all transformed components
-
-**Current Approach (Manual Polling):**
+**How It Works:**
 ```javascript
-async duoSync() {
-    this.todos = await store.toArray(); // Manual refresh
+// Automatically generated in init()
+setupLiveQuery() {
+    const subscription = window.duo.liveQuery(() => store.toArray())
+        .subscribe(items => this.todos = items);
 }
 
-async createTodo() {
-    await store.add(record);
-    await this.duoSync(); // Must manually refresh
-}
-```
-
-**Proposed Approach (Reactive liveQuery):**
-```javascript
-init() {
-    // Set up reactive subscription once
-    Dexie.liveQuery(() => store.toArray())
-        .subscribe(todos => this.todos = todos);
-}
-
+// CRUD methods no longer need manual refresh
 async createTodo() {
     await store.add(record);
     // UI auto-updates via liveQuery! No manual call needed
@@ -354,9 +342,74 @@ async createTodo() {
 - ⚡ More efficient (no manual polling intervals)
 - 🎯 Automatically reactive to any IndexedDB change
 
-**Note:** liveQuery handles **IndexedDB → Alpine UI reactivity** only. Server sync (IndexedDB → Server) remains handled by the existing SyncQueue with custom API endpoints.
+---
+
+### Automatic Carbon Date Transformation
+Automatically detect and transform Carbon date methods in Blade templates.
+
+**Status:** ✅ Complete
+**Completed:** 2025-01-30
+**Complexity:** Medium
+
+**Implemented:**
+- ✅ Automatic detection of Carbon methods like `diffForHumans()`, `format()`, etc.
+- ✅ JavaScript equivalents generated for all common Carbon date methods
+- ✅ Reactive timestamps that update automatically (e.g., "just now" → "1 minute ago")
+- ✅ Component-level configuration for refresh intervals
+- ✅ Zero manual code changes required
+
+**Example:**
+```blade
+<!-- Blade (write normal code) -->
+{{ $todo->created_at->diffForHumans() }}
+
+<!-- Automatically becomes -->
+<span x-text="diffForHumans(todo.created_at, _now)"></span>
+```
+
+**Supported Methods:**
+- `diffForHumans()` - "5 minutes ago"
+- `format('Y-m-d')` - "2025-01-30"
+- `toDateString()` - "Thu Jan 30 2025"
+- `toTimeString()` - "14:30:00"
+- `toDateTimeString()` - "2025-01-30 14:30:00"
+- `toFormattedDateString()` - "Jan 30, 2025"
 
 ---
+
+### Component-Level Configuration
+Per-component customization through `duoConfig()` method.
+
+**Status:** ✅ Complete
+**Completed:** 2025-01-30
+**Complexity:** Low
+
+**Implemented:**
+- ✅ `duoConfig()` method in `WithDuo` trait
+- ✅ Configuration extracted and injected into Alpine components
+- ✅ Component config takes precedence over global config
+- ✅ Debug mode and timestamp refresh interval configurable
+
+**Example:**
+```php
+use JoshCirre\Duo\WithDuo;
+
+class TodoList extends Component {
+    use WithDuo;
+
+    protected function duoConfig(): array
+    {
+        return [
+            'timestampRefreshInterval' => 5000, // 5 seconds
+            'debug' => true,
+        ];
+    }
+}
+```
+
+---
+
+## 🚧 In Progress
 
 ### Database Schema Extraction & TypeScript Types
 Auto-generate schema information and TypeScript types from Eloquent models.
@@ -390,6 +443,74 @@ interface Todo {
 ---
 
 ## 💡 Future Ideas
+
+### Advanced Blade-to-Alpine Transformation Hints
+Provide configuration and Blade directives to help with edge cases in automatic transformation.
+
+**Status:** 💭 Concept
+**Complexity:** Medium
+
+**Problem:** While Duo's automatic transformation handles most cases, complex Blade patterns or custom components may need hints for correct transformation.
+
+**Proposed Solutions:**
+
+**1. Component-Level Transformation Config:**
+```php
+protected function duoConfig(): array
+{
+    return [
+        'transformations' => [
+            'skipElements' => ['.no-transform', '#static-content'],
+            'customBindings' => [
+                'data-status' => 'item.status', // Custom attribute binding
+            ],
+            'preserveClasses' => ['tooltip', 'dropdown'], // Don't transform these classes
+        ],
+    ];
+}
+```
+
+**2. Blade Transformation Directives:**
+```blade
+{{-- Exclude from transformation --}}
+@duoSkip
+<div>
+    This content won't be transformed to Alpine
+</div>
+@endDuoSkip
+
+{{-- Custom transformation hints --}}
+@foreach($items as $item)
+    <div @duoHint:key="item.uuid"> {{-- Use UUID instead of ID --}}
+        {{ $item->title }}
+    </div>
+@endforeach
+
+{{-- Force specific Alpine binding --}}
+<span @duoHint:bind="customMethod(item)">{{ $item->computed }}</span>
+```
+
+**3. Custom Transform Handlers:**
+```php
+// In duoConfig()
+'transformHandlers' => [
+    'CustomComponent' => fn($html, $data) => /* custom logic */,
+],
+```
+
+**Benefits:**
+- 🎯 Handle edge cases gracefully
+- 🛠️ Fine-grained control when needed
+- 🔧 Escape hatches for complex scenarios
+- 📝 Clear intent in Blade templates
+
+**Use Cases:**
+- Complex custom components that don't follow standard patterns
+- Third-party Blade components
+- Dynamic attribute generation
+- Special Alpine.js patterns (e.g., `x-teleport`, `x-id`)
+
+---
 
 ### Background Sync Service Worker
 Use service workers for more robust background sync.
