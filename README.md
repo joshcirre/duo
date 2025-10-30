@@ -174,7 +174,48 @@ protected $guarded = ['id']; // Everything except 'id' is fillable
 
 Duo automatically extracts your model's fillable attributes and database schema (column types, nullable, defaults) to generate the IndexedDB manifest—no manual configuration needed!
 
-### 2. Configure Vite
+**User-Scoped Models:**
+
+For models that belong to users, add a `user()` relationship but **do NOT add `user_id` to `$fillable`**:
+
+```php
+class Todo extends Model
+{
+    use Syncable;
+
+    // ✅ CORRECT: user_id is NOT in $fillable (security)
+    protected $fillable = ['title', 'description', 'completed'];
+
+    // ✅ Add user relationship - Duo auto-assigns user_id during sync
+    public function user()
+    {
+        return $this->belongsTo(User::class);
+    }
+}
+```
+
+**Why?** Including `user_id` in `$fillable` is a security risk—users could assign items to other users. Duo automatically detects the `user()` relationship and assigns the authenticated user's ID securely during sync.
+
+### 2. Add @duoMeta Directive to Your Layout
+
+**CRITICAL:** Add the `@duoMeta` directive to the `<head>` section of your main layout. This provides the CSRF token and enables offline page caching:
+
+```blade
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    @duoMeta
+
+    <title>{{ $title ?? config('app.name') }}</title>
+    <!-- rest of your head content -->
+</head>
+```
+
+The `@duoMeta` directive outputs:
+- `<meta name="csrf-token">` - Required for API sync requests
+- `<meta name="duo-cache">` - Tells the service worker to cache this page for offline access
+
+### 3. Configure Vite
 
 Add the Duo plugin to your `vite.config.js`:
 
@@ -209,7 +250,7 @@ export default defineConfig({
 > - `entry` - Path to your main JS file (default: `'resources/js/app.js'`)
 > - `autoInject` - Set to `false` to manually initialize Duo
 
-### 3. Add the WithDuo Trait to Your Livewire Components
+### 4. Add the WithDuo Trait to Your Livewire Components
 
 This is where the magic happens! Add the `WithDuo` trait to any Livewire component and Duo will automatically transform it to use IndexedDB:
 
@@ -331,6 +372,7 @@ This component shows:
 
 ### 6. Run Your Application
 
+**Development:**
 ```bash
 composer run dev
 ```
@@ -340,10 +382,22 @@ This runs both `npm run dev` and `php artisan serve` concurrently. The Vite plug
 - Watch for model and component changes
 - Regenerate the manifest when files change
 
-**For production:**
+**Production Build:**
 ```bash
 npm run build
 ```
+
+The production build will:
+- Generate the IndexedDB manifest
+- Copy the service worker to `public/duo-sw.js` automatically
+- Bundle all Duo client code with your assets
+
+**Important for Offline Support:**
+1. Visit your application **while online** (at least once after deploying)
+2. The service worker will detect pages with `@duoMeta` and cache them
+3. After the initial visit, the page will work offline
+
+The service worker route (`/duo-sw.js`) is automatically registered by the Duo service provider—no additional configuration needed!
 
 ## How It Works
 
