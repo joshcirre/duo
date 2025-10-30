@@ -250,6 +250,13 @@ final class DuoServiceProvider extends ServiceProvider
                         try {
                             console.log(\'[Duo] syncServerToIndexedDB started\');
 
+                            // When offline, skip sync - IndexedDB is the source of truth
+                            // The service worker serves cached HTML with stale server data
+                            if (!navigator.onLine) {
+                                console.log(\'[Duo] Offline mode - skipping server sync, IndexedDB is source of truth\');
+                                return;
+                            }
+
                             // Wait for window.duo to be available (with timeout)
                             let attempts = 0;
                             const maxAttempts = 100; // 10 seconds total
@@ -261,7 +268,7 @@ final class DuoServiceProvider extends ServiceProvider
                                 }
                             }
 
-                            // Sync initial server data to IndexedDB (server is source of truth on load)
+                            // Sync initial server data to IndexedDB (server is source of truth when online)
                             if (!window.duo) {
                                 console.error(\'[Duo] window.duo not available after\', maxAttempts * 100, \'ms\');
                                 return;
@@ -285,20 +292,18 @@ final class DuoServiceProvider extends ServiceProvider
                             const serverTodos = this.todos || [];
                             console.log(\'[Duo] Server has\', serverTodos.length, \'todos:\', serverTodos);
 
-                            if (serverTodos.length === 0) {
-                                console.log(\'[Duo] No server todos to sync\');
-                                return;
-                            }
-
+                            // Always clear IndexedDB to sync with server state (even if empty)
                             console.log(\'[Duo] Clearing IndexedDB...\');
                             await store.clear();
 
-                            console.log(\'[Duo] Writing\', serverTodos.length, \'todos to IndexedDB...\');
-                            await store.bulkPut(serverTodos.map(item => ({
-                                ...item,
-                                _duo_synced_at: Date.now(),
-                                _duo_pending_sync: false
-                            })));
+                            if (serverTodos.length > 0) {
+                                console.log(\'[Duo] Writing\', serverTodos.length, \'todos to IndexedDB...\');
+                                await store.bulkPut(serverTodos.map(item => ({
+                                    ...item,
+                                    _duo_synced_at: Date.now(),
+                                    _duo_pending_sync: false
+                                })));
+                            }
 
                             console.log(\'[Duo] ✅ Server data synced to IndexedDB successfully\');
                         } catch (error) {
