@@ -1,7 +1,7 @@
 import type { Plugin, HmrContext } from 'vite';
 import type { PluginContext } from 'rollup';
-import { resolve } from 'path';
-import { existsSync, readFileSync } from 'fs';
+import { resolve, dirname } from 'path';
+import { existsSync, readFileSync, copyFileSync, mkdirSync } from 'fs';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { minimatch } from 'minimatch';
@@ -220,6 +220,29 @@ initializeDuo({
         context.warn(
           `[Duo] Manifest file not found at ${resolvedManifestPath}. Run 'php artisan duo:generate' to create it.`
         );
+      }
+    },
+
+    writeBundle() {
+      // Copy service worker to public directory for production builds
+      const serviceWorkerSource = resolve(basePath, 'node_modules/@joshcirre/vite-plugin-duo/dist/public/duo-sw.js');
+      const serviceWorkerDest = resolve(basePath, 'public/duo-sw.js');
+
+      if (existsSync(serviceWorkerSource)) {
+        try {
+          // Ensure public directory exists
+          const publicDir = dirname(serviceWorkerDest);
+          if (!existsSync(publicDir)) {
+            mkdirSync(publicDir, { recursive: true });
+          }
+
+          copyFileSync(serviceWorkerSource, serviceWorkerDest);
+          console.log('\x1b[32m✓\x1b[0m \x1b[2m[Duo] Service worker copied to public/duo-sw.js\x1b[0m');
+        } catch (error) {
+          console.warn('[Duo] Failed to copy service worker:', error);
+        }
+      } else {
+        console.warn('[Duo] Service worker not found in node_modules');
       }
     },
   };
