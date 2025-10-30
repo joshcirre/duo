@@ -378,34 +378,99 @@ Automatically detect and transform Carbon date methods in Blade templates.
 ---
 
 ### Component-Level Configuration
-Per-component customization through `duoConfig()` method.
+Per-component customization through type-safe `duoConfig()` method.
 
 **Status:** ✅ Complete
 **Completed:** 2025-01-30
 **Complexity:** Low
 
 **Implemented:**
-- ✅ `duoConfig()` method in `WithDuo` trait
+- ✅ Type-safe `DuoConfig` class with named parameters
+- ✅ Full IDE autocomplete and type checking
+- ✅ Built-in validation (e.g., positive integers)
 - ✅ Configuration extracted and injected into Alpine components
 - ✅ Component config takes precedence over global config
-- ✅ Debug mode and timestamp refresh interval configurable
+- ✅ Four config options: syncInterval, timestampRefreshInterval, maxRetryAttempts, debug
 
 **Example:**
 ```php
-use JoshCirre\Duo\WithDuo;
+use JoshCirre\Duo\{WithDuo, DuoConfig};
 
 class TodoList extends Component {
     use WithDuo;
 
-    protected function duoConfig(): array
+    protected function duoConfig(): DuoConfig
     {
-        return [
-            'timestampRefreshInterval' => 5000, // 5 seconds
-            'debug' => true,
-        ];
+        return DuoConfig::make(
+            syncInterval: 3000,
+            timestampRefreshInterval: 5000,
+            debug: true
+        );
     }
 }
 ```
+
+**Adding New Configuration Options:**
+
+The type-safe system makes adding new options straightforward:
+
+1. **Add to `config/duo.php`:**
+   ```php
+   'new_option' => env('DUO_NEW_OPTION', 'default'),
+   ```
+
+2. **Add to `DuoConfig` constructor:**
+   ```php
+   public function __construct(
+       public readonly ?int $syncInterval = null,
+       public readonly ?string $newOption = null, // New!
+   ) {
+       // Add validation if needed
+       if ($this->newOption !== null && !in_array($this->newOption, ['valid', 'values'])) {
+           throw new \InvalidArgumentException('Invalid newOption value');
+       }
+   }
+   ```
+
+3. **Add to `DuoConfig::make()` method:**
+   ```php
+   public static function make(
+       ?int $syncInterval = null,
+       ?string $newOption = null, // New!
+   ): self {
+       return new self(
+           syncInterval: $syncInterval,
+           newOption: $newOption, // New!
+       );
+   }
+   ```
+
+4. **Add to `DuoConfig::toArray()` method:**
+   ```php
+   if ($this->newOption !== null) {
+       $config['newOption'] = $this->newOption;
+   }
+   ```
+
+5. **Add to `BladeToAlpineTransformer::extractDuoConfig()`:**
+   ```php
+   $globalConfig = [
+       'syncInterval' => config('duo.sync_interval', 5000),
+       'newOption' => config('duo.new_option', 'default'), // New!
+   ];
+   ```
+
+6. **Use in generated JavaScript:**
+   ```javascript
+   // Access via this._duoConfig.newOption in generated methods
+   const option = this._duoConfig?.newOption || 'default';
+   ```
+
+**Benefits:**
+- ✅ IDE autocomplete updates automatically
+- ✅ Type checking catches errors at development time
+- ✅ Single source of truth for available options
+- ✅ Clear upgrade path for new features
 
 ---
 
@@ -443,6 +508,81 @@ interface Todo {
 ---
 
 ## 💡 Future Ideas
+
+### Future Configuration Options
+Potential new configuration options to add to `DuoConfig`.
+
+**Status:** 💭 Concept
+**Complexity:** Low (thanks to type-safe system)
+
+**Potential Options:**
+
+**1. Conflict Resolution Strategy:**
+```php
+DuoConfig::make(
+    conflictResolution: ConflictStrategy::ServerWins
+    // or: ConflictStrategy::ClientWins, ConflictStrategy::Newest, ConflictStrategy::Manual
+)
+```
+
+**2. Offline Storage Limits:**
+```php
+DuoConfig::make(
+    maxStorageItems: 1000,        // Max items per store
+    storageQuotaMB: 50            // Max storage in MB
+)
+```
+
+**3. Sync Strategies:**
+```php
+DuoConfig::make(
+    syncStrategy: SyncStrategy::WriteThrough,  // Immediate sync
+    // or: SyncStrategy::WriteBehind (default), SyncStrategy::Manual
+    batchSize: 10                 // Sync N operations at once
+)
+```
+
+**4. Network Conditions:**
+```php
+DuoConfig::make(
+    syncOnlyOnWifi: true,         // Mobile data savings
+    offlineQueueLimit: 100        // Max queued operations
+)
+```
+
+**5. Transformation Hints:**
+```php
+DuoConfig::make(
+    skipElements: ['.no-transform', '#static'],
+    preserveClasses: ['tooltip', 'dropdown'],
+    customBindings: ['data-status' => 'item.status']
+)
+```
+
+**6. Performance Tuning:**
+```php
+DuoConfig::make(
+    enableVirtualScroll: true,    // For large lists
+    lazyLoadThreshold: 100,       // Load data in chunks
+    debounceMs: 300               // Debounce sync triggers
+)
+```
+
+**7. Developer Experience:**
+```php
+DuoConfig::make(
+    logLevel: LogLevel::Verbose,  // Debug, Info, Warn, Error, None
+    enableDevTools: true,         // Show debug panel
+    showPerformanceMetrics: true  // Track sync times
+)
+```
+
+**Implementation Notes:**
+- All new options follow the same 6-step process documented above
+- Enum types provide additional type safety (e.g., `ConflictStrategy`, `SyncStrategy`)
+- Complex options can use nested DTOs (e.g., `NetworkConfig`, `TransformConfig`)
+
+---
 
 ### Advanced Blade-to-Alpine Transformation Hints
 Provide configuration and Blade directives to help with edge cases in automatic transformation.

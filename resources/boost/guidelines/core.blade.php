@@ -149,6 +149,44 @@ class Todos extends Component
 </code-snippet>
 @endverbatim
 
+### Component Configuration
+
+Duo provides type-safe, per-component configuration through the `duoConfig()` method. Component config overrides global settings from `config/duo.php`.
+
+@verbatim
+<code-snippet name="Component with custom configuration" lang="php">
+use JoshCirre\Duo\{WithDuo, DuoConfig};
+
+class Todos extends Component
+{
+    use WithDuo;
+
+    protected function duoConfig(): DuoConfig
+    {
+        return DuoConfig::make(
+            syncInterval: 3000,              // Sync every 3 seconds
+            timestampRefreshInterval: 5000,  // Refresh timestamps every 5 seconds
+            maxRetryAttempts: 5,             // Retry failed syncs 5 times
+            debug: true                      // Enable debug logging
+        );
+    }
+
+    // ... rest of component
+}
+</code-snippet>
+@endverbatim
+
+**Available Configuration Options:**
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `syncInterval` | int | 5000 | Milliseconds between sync attempts to server |
+| `timestampRefreshInterval` | int | 10000 | Milliseconds between timestamp updates (for `diffForHumans()`, etc.) |
+| `maxRetryAttempts` | int | 3 | Maximum retry attempts for failed sync operations |
+| `debug` | bool | false | Enable verbose console logging |
+
+**Configuration Priority:** Component `duoConfig()` > Global `config/duo.php` > Defaults
+
 ### View Patterns
 
 Duo automatically transforms Blade loops to Alpine.js for reactive rendering:
