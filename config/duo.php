@@ -110,4 +110,24 @@ return [
     'model_paths' => [
         app_path('Models'),
     ],
+
+    /*
+    |--------------------------------------------------------------------------
+    | Sync Status Component
+    |--------------------------------------------------------------------------
+    |
+    | Configuration for the <x-duo::sync-status /> component.
+    |
+    */
+    'sync_status' => [
+        // Delay (in milliseconds) before showing sync indicator
+        // Only show if syncing takes longer than this value
+        'show_delay' => env('DUO_SYNC_STATUS_DELAY', 100),
+
+        // Show "All changes synced" message after successful sync
+        'show_success' => env('DUO_SYNC_STATUS_SHOW_SUCCESS', false),
+
+        // Duration (in milliseconds) to show success message before fading
+        'success_duration' => env('DUO_SYNC_STATUS_SUCCESS_DURATION', 2000),
+    ],
 ];

@@ -1,20 +1,37 @@
-@props(['position' => 'top-right', 'inline' => false])
+@props(['position' => 'top-right', 'inline' => false, 'showDelay' => null, 'showSuccess' => null])
 
 @php
-$positionClasses = [
-    'top-right' => 'fixed top-4 right-4',
-    'top-left' => 'fixed top-4 left-4',
-    'bottom-right' => 'fixed bottom-4 right-4',
-    'bottom-left' => 'fixed bottom-4 left-4',
+// Map position to inline styles (more reliable than Tailwind classes)
+$positionStyles = [
+    'top-right' => 'position: fixed; top: 1rem; right: 1rem; z-index: 9999;',
+    'top-left' => 'position: fixed; top: 1rem; left: 1rem; z-index: 9999;',
+    'bottom-right' => 'position: fixed; bottom: 1rem; right: 1rem; z-index: 9999;',
+    'bottom-left' => 'position: fixed; bottom: 1rem; left: 1rem; z-index: 9999;',
     'inline' => '',
 ];
 
-$classes = $inline ? '' : ($positionClasses[$position] ?? $positionClasses['top-right']);
+$style = $inline ? '' : ($positionStyles[$position] ?? $positionStyles['top-right']);
+
+// Get config values with prop overrides
+$showDelay = $showDelay ?? config('duo.sync_status.show_delay', 1000);
+$showSuccess = $showSuccess ?? config('duo.sync_status.show_success', false);
+$successDuration = config('duo.sync_status.success_duration', 2000);
 @endphp
 
 <div
     x-data="{
-        duoSyncStatus: { isOnline: navigator.onLine, pendingCount: 0, isProcessing: false },
+        duoSyncStatus: {
+            isOnline: navigator.onLine,
+            pendingCount: 0,
+            showIndicator: false,
+            showSuccess: {{ $showSuccess ? 'true' : 'false' }},
+            syncStartTime: null,
+            delayTimer: null,
+        },
+        config: {
+            showDelay: {{ $showDelay }},
+            successDuration: {{ $successDuration }},
+        },
         async init() {
             // Wait for Duo client to be ready
             if (!window.duo) {
@@ -43,13 +60,46 @@ $classes = $inline ? '' : ($positionClasses[$position] ?? $positionClasses['top-
             const subscription = window.duo.liveQuery(async () => {
                 let totalPending = 0;
                 for (const [storeName, store] of db.getAllStores()) {
-                    const pending = await store.where('_duo_pending_sync').equals(1).count();
+                    // Get all records and filter for pending sync
+                    // Dexie doesn't handle boolean queries well with where(), so we filter manually
+                    const all = await store.toArray();
+                    const pending = all.filter(item => item._duo_pending_sync === true || item._duo_pending_sync === 1).length;
                     totalPending += pending;
                 }
                 return totalPending;
             }).subscribe(
                 count => {
+                    const previousCount = this.duoSyncStatus.pendingCount;
                     this.duoSyncStatus.pendingCount = count;
+
+                    // If count went from 0 to >0, sync started
+                    if (previousCount === 0 && count > 0) {
+                        this.duoSyncStatus.syncStartTime = Date.now();
+
+                        // Set timer to show indicator after delay
+                        if (this.duoSyncStatus.delayTimer) {
+                            clearTimeout(this.duoSyncStatus.delayTimer);
+                        }
+                        this.duoSyncStatus.delayTimer = setTimeout(() => {
+                            // Only show if still syncing
+                            if (this.duoSyncStatus.pendingCount > 0) {
+                                this.duoSyncStatus.showIndicator = true;
+                            }
+                        }, this.config.showDelay);
+                    }
+
+                    // If count went to 0, sync completed
+                    if (count === 0 && previousCount > 0) {
+                        // Clear the delay timer
+                        if (this.duoSyncStatus.delayTimer) {
+                            clearTimeout(this.duoSyncStatus.delayTimer);
+                            this.duoSyncStatus.delayTimer = null;
+                        }
+
+                        // Hide indicator immediately
+                        this.duoSyncStatus.showIndicator = false;
+                        this.duoSyncStatus.syncStartTime = null;
+                    }
                 },
                 error => console.error('[Duo] Error in sync status liveQuery:', error)
             );
@@ -63,11 +113,16 @@ $classes = $inline ? '' : ($positionClasses[$position] ?? $positionClasses['top-
             });
 
             // Cleanup subscription when component is destroyed
-            this.$cleanup = () => subscription.unsubscribe();
+            this.$cleanup = () => {
+                subscription.unsubscribe();
+                if (this.duoSyncStatus.delayTimer) {
+                    clearTimeout(this.duoSyncStatus.delayTimer);
+                }
+            };
         }
     }"
     x-init="init()"
-    {{ $attributes->merge(['class' => $classes . ' z-50']) }}
+    @if($style) style="{{ $style }}" @endif
 >
     <!-- Offline Badge -->
     <div
@@ -82,9 +137,9 @@ $classes = $inline ? '' : ($positionClasses[$position] ?? $positionClasses['top-
         </flux:badge>
     </div>
 
-    <!-- Syncing Badge -->
+    <!-- Syncing Badge (only shows after delay if sync takes too long) -->
     <div
-        x-show="duoSyncStatus.isOnline && duoSyncStatus.pendingCount > 0"
+        x-show="duoSyncStatus.isOnline && duoSyncStatus.showIndicator && duoSyncStatus.pendingCount > 0"
         x-transition
     >
         <flux:badge color="blue" icon="arrow-path" icon-variant="micro" size="lg">
@@ -95,19 +150,20 @@ $classes = $inline ? '' : ($positionClasses[$position] ?? $positionClasses['top-
         </flux:badge>
     </div>
 
-    <!-- Synced Badge (briefly shows then fades) -->
-    <div
-        x-show="duoSyncStatus.isOnline && duoSyncStatus.pendingCount === 0 && !duoSyncStatus.isProcessing"
-        x-transition
-        @duo-synced.window="
-            $el.classList.remove('opacity-0');
-            setTimeout(() => $el.classList.add('opacity-0'), 2000);
-        "
-        class="opacity-0 transition-opacity duration-500"
-        style="display: none;"
-    >
-        <flux:badge color="lime" icon="check-circle" size="lg">
-            <span class="font-semibold">All changes synced</span>
-        </flux:badge>
-    </div>
+    <!-- Synced Badge (optional, controlled by config) -->
+    <template x-if="duoSyncStatus.showSuccess">
+        <div
+            x-show="duoSyncStatus.isOnline && duoSyncStatus.pendingCount === 0"
+            x-transition
+            @duo-synced.window="
+                $el.classList.remove('opacity-0');
+                setTimeout(() => $el.classList.add('opacity-0'), config.successDuration);
+            "
+            class="opacity-0 transition-opacity duration-500"
+        >
+            <flux:badge color="lime" icon="check-circle" size="lg">
+                <span class="font-semibold">All changes synced</span>
+            </flux:badge>
+        </div>
+    </template>
 </div>

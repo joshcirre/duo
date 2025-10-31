@@ -206,16 +206,26 @@ final class ModelRegistry
      */
     public function toManifest(): array
     {
-        $manifest = [];
+        $manifest = [
+            '_version' => now()->timestamp, // Timestamp-based version like Laravel migrations
+            'stores' => [],
+        ];
 
         foreach ($this->models as $class => $metadata) {
             $storeName = str_replace('\\', '_', $class);
 
-            $manifest[$storeName] = [
+            // Build indexes array - include primary key and timestamp columns for sorting
+            $indexes = [$metadata['primaryKey']];
+            if ($metadata['timestamps']) {
+                $indexes[] = 'created_at';
+                $indexes[] = 'updated_at';
+            }
+
+            $manifest['stores'][$storeName] = [
                 'model' => $class,
                 'table' => $metadata['table'],
                 'primaryKey' => $metadata['primaryKey'],
-                'indexes' => [$metadata['primaryKey']],
+                'indexes' => $indexes,
                 'timestamps' => $metadata['timestamps'],
                 'schema' => $metadata['schema'], // Include schema with column types
                 // API endpoints for background sync

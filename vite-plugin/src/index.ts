@@ -93,7 +93,8 @@ export function duo(options: DuoPluginOptions = {}): Plugin {
 
       if (existsSync(resolvedManifestPath)) {
         const manifest = JSON.parse(readFileSync(resolvedManifestPath, 'utf-8'));
-        context.info(`[Duo] Manifest generated with ${Object.keys(manifest).length} model(s)`);
+        const modelCount = manifest.stores ? Object.keys(manifest.stores).length : Object.keys(manifest).length;
+        context.info(`[Duo] Manifest generated with ${modelCount} model(s)`);
       }
     } catch (error) {
       context.error('[Duo] Failed to generate manifest: ' + error);
@@ -211,7 +212,8 @@ initializeDuo({
         try {
           const manifest = JSON.parse(readFileSync(resolvedManifestPath, 'utf-8'));
           if (!autoGenerate) {
-            context.info(`[Duo] Loaded manifest with ${Object.keys(manifest).length} model(s)`);
+            const modelCount = manifest.stores ? Object.keys(manifest.stores).length : Object.keys(manifest).length;
+            context.info(`[Duo] Loaded manifest with ${modelCount} model(s)`);
           }
         } catch (error) {
           context.warn('[Duo] Failed to parse manifest file: ' + error);

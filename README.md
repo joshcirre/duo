@@ -230,25 +230,48 @@ export default defineConfig({
             input: ['resources/css/app.css', 'resources/js/app.js'],
             refresh: true,
         }),
-        duo({
-            manifestPath: 'resources/js/duo/manifest.json',
-            watch: true,  // Auto-regenerate manifest on file changes
-            autoGenerate: true,
-            patterns: [
-                'app/Models/**/*.php',
-                'resources/views/livewire/**/*.php',  // Volt components
-                'app/Livewire/**/*.php',              // Class-based components
-            ],
-        }),
+        duo(), // That's it! Uses sensible defaults
     ],
 });
 ```
 
-> **Note:** The Duo Vite plugin automatically injects the initialization code into your `app.js` file. No manual initialization needed!
->
-> You can customize the auto-injection behavior with these options:
-> - `entry` - Path to your main JS file (default: `'resources/js/app.js'`)
-> - `autoInject` - Set to `false` to manually initialize Duo
+**That's all you need!** The plugin will automatically:
+- ✅ Generate the manifest at `resources/js/duo/manifest.json`
+- ✅ Watch `app/Models/**/*.php` for changes
+- ✅ Auto-regenerate manifest when models change
+- ✅ Inject Duo initialization code into `resources/js/app.js`
+- ✅ Copy the service worker to `public/duo-sw.js` on build
+
+**Want to customize?** All options have sensible defaults and are optional:
+
+```javascript
+duo({
+    // Manifest path (default: 'resources/js/duo/manifest.json')
+    manifestPath: 'resources/js/duo/manifest.json',
+
+    // Watch for file changes (default: true)
+    watch: true,
+
+    // Auto-generate manifest (default: true)
+    autoGenerate: true,
+
+    // Files to watch for changes (default: ['app/Models/**/*.php'])
+    patterns: [
+        'app/Models/**/*.php',
+        'resources/views/livewire/**/*.php',  // Include Volt components
+        'app/Livewire/**/*.php',              // Include class-based components
+    ],
+
+    // Entry file for auto-injection (default: 'resources/js/app.js')
+    entry: 'resources/js/app.js',
+
+    // Auto-inject initialization code (default: true)
+    autoInject: true,
+
+    // Custom artisan command (default: 'php artisan duo:generate')
+    command: 'php artisan duo:generate',
+})
+```
 
 ### 4. Add the WithDuo Trait to Your Livewire Components
 
@@ -357,7 +380,9 @@ When you add the `WithDuo` trait, Duo will:
 6. ✅ Route all data operations through IndexedDB
 7. ✅ Queue changes for background sync to the server
 
-### 5. Add the Sync Status Component (Optional)
+### 5. Add Optional Components
+
+**Sync Status Indicator:**
 
 Display a visual indicator of the sync status:
 
@@ -369,6 +394,21 @@ This component shows:
 - 🟠 **Offline**: "You're offline - Changes saved locally"
 - 🔵 **Syncing**: "Syncing X changes..."
 - 🟢 **Synced**: "All changes synced"
+
+**Debug Panel (Local Development Only):**
+
+Add a debug panel to view IndexedDB info and manage the database during development:
+
+```blade
+<x-duo::debug position="bottom-right" />
+```
+
+This component (only visible in `local` environment) provides:
+- 📊 **Database Info**: Name, schema version, stores, and record counts
+- 🔄 **Refresh**: Update database information on demand
+- 🗑️ **Clear Database**: Delete IndexedDB and reload (useful for testing schema upgrades)
+
+The debug panel automatically shows the current schema version (timestamp-based) and makes it easy to test schema migrations by clearing the database.
 
 ### 6. Run Your Application
 
@@ -577,6 +617,63 @@ Component-level configuration allows you to:
 - **Component** (`duoConfig()`): Overrides for specific components, set in code
 
 This architecture provides flexibility while maintaining sensible defaults across your entire application.
+
+### Vite Plugin Options
+
+The Duo Vite plugin has sensible defaults and requires no configuration. Simply add `duo()` to your Vite plugins.
+
+**All options are optional:**
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `manifestPath` | string | `'resources/js/duo/manifest.json'` | Path where the manifest file is generated |
+| `watch` | boolean | `true` | Watch files for changes during development |
+| `autoGenerate` | boolean | `true` | Automatically run `duo:generate` on build and file changes |
+| `patterns` | string[] | `['app/Models/**/*.php']` | Glob patterns to watch for changes. Add Volt/Livewire paths if you want manifest regeneration on component changes |
+| `entry` | string | `'resources/js/app.js'` | Entry file where Duo initialization code is injected |
+| `autoInject` | boolean | `true` | Automatically inject Duo initialization code into entry file |
+| `command` | string | `'php artisan duo:generate'` | Custom artisan command to run for manifest generation |
+| `basePath` | string | `process.cwd()` | Base path for resolving file paths |
+
+**Example with custom options:**
+
+```javascript
+duo({
+    patterns: [
+        'app/Models/**/*.php',           // Watch models
+        'resources/views/livewire/**/*.php', // Watch Volt components
+        'app/Livewire/**/*.php',         // Watch class-based components
+    ],
+    watch: true,    // Regenerate on file changes (dev only)
+    autoGenerate: true,  // Auto-run duo:generate
+})
+```
+
+**Disabling auto-injection (manual initialization):**
+
+If you want full control over Duo initialization:
+
+```javascript
+// vite.config.js
+duo({
+    autoInject: false,
+})
+```
+
+Then manually initialize in your JavaScript:
+
+```javascript
+// resources/js/app.js
+import { initializeDuo } from '@joshcirre/vite-plugin-duo/client';
+import manifest from 'virtual:duo-manifest';
+
+await initializeDuo({
+    manifest,
+    debug: import.meta.env.DEV,
+    syncInterval: 3000,
+    maxRetries: 5,
+});
+```
 
 ## Advanced Usage
 
@@ -826,6 +923,41 @@ If changes disappear after refresh:
    await window.duo.clearCache();
    location.reload();
    ```
+
+### Clearing IndexedDB
+
+Need to clear IndexedDB during development? You have several options:
+
+**Option 1: Debug Panel (Easiest)**
+```blade
+<x-duo::debug position="bottom-right" />
+```
+Click "Delete Database & Reload" to clear IndexedDB and reload the page.
+
+**Option 2: Browser Console**
+```javascript
+// Delete Duo database
+await window.duo?.getDatabase()?.delete();
+location.reload();
+
+// Or delete ALL databases (nuclear option)
+const dbs = await indexedDB.databases();
+for (const db of dbs) {
+    indexedDB.deleteDatabase(db.name);
+}
+location.reload();
+```
+
+**Option 3: Browser DevTools**
+- Chrome/Edge: DevTools → Application → IndexedDB → Right-click database → Delete
+- Firefox: DevTools → Storage → IndexedDB → Right-click database → Delete
+- Safari: Web Inspector → Storage → IndexedDB → Select database → Click trash icon
+
+**When to clear IndexedDB:**
+- Testing schema version upgrades
+- Debugging data sync issues
+- After changing model fillable attributes
+- When data appears corrupted
 
 ## FAQ
 

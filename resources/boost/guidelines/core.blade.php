@@ -213,6 +213,78 @@ Duo automatically transforms Blade loops to Alpine.js for reactive rendering:
 </code-snippet>
 @endverbatim
 
+### Listen for Sync Events
+
+Duo dispatches a `duo-synced` event whenever a sync operation completes successfully. You can listen for this event to trigger custom behavior:
+
+**Livewire Components:**
+
+@verbatim
+<code-snippet name="Listen for sync events in Livewire" lang="php">
+use Livewire\Attributes\On;
+
+#[On('duo-synced')]
+public function handleSyncComplete()
+{
+    // Refresh data, show notification, etc.
+    $this->dispatch('notify', message: 'Changes synced!');
+}
+</code-snippet>
+@endverbatim
+
+**Alpine Components:**
+
+@verbatim
+<code-snippet name="Listen for sync events in Alpine" lang="blade">
+<!-- Using Alpine's @event directive -->
+<div @duo-synced.window="handleSync($event.detail)">
+    <!-- Your component -->
+</div>
+
+<!-- Or in Alpine x-data -->
+<div x-data="{
+    init() {
+        window.addEventListener('duo-synced', (event) => {
+            console.log('Sync completed:', event.detail.operation);
+            // event.detail.operation contains: id, storeName, operation, data, timestamp
+        });
+    }
+}">
+    <!-- Your component -->
+</div>
+</code-snippet>
+@endverbatim
+
+**Vanilla JavaScript:**
+
+@verbatim
+<code-snippet name="Listen for sync events in JavaScript" lang="js">
+window.addEventListener('duo-synced', (event) => {
+    const { operation } = event.detail;
+    console.log('Synced:', operation.storeName, operation.operation);
+});
+</code-snippet>
+@endverbatim
+
+**Use Cases:**
+- Refreshing server-side data displays after sync
+- Showing toast notifications when changes are saved
+- Tracking sync analytics
+- Updating UI indicators
+
+### Sync Status Component
+
+@verbatim
+<code-snippet name="Sync status component" lang="blade">
+<x-duo::sync-status />
+<x-duo::sync-status position="top-left" />
+<x-duo::sync-status :show-delay="2000" :show-success="true" />
+</code-snippet>
+@endverbatim
+
+**Props:** `position` (top-right|top-left|bottom-right|bottom-left), `inline` (bool), `showDelay` (ms, default 1000), `showSuccess` (bool, default false)
+**Behavior:** Shows "Offline" when offline. Only shows "Syncing" if sync takes longer than `showDelay`. Optionally shows "Synced" if `showSuccess=true`.
+
 ### Important Notes
 
 - **Authentication**: Duo uses session-based auth (web middleware) so authentication persists across page refreshes, even offline

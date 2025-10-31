@@ -40,17 +40,22 @@ export class DuoClient {
    */
   async initialize(): Promise<void> {
     // Load manifest (either passed directly or fetched)
-    const manifest = this.config.manifest || await this.loadManifest();
+    const manifestData = this.config.manifest || await this.loadManifest();
+
+    // Extract schema version and stores from manifest
+    // Manifest structure: { _version: timestamp, stores: {...} }
+    const schemaVersion = manifestData._version || 1;
+    const stores = manifestData.stores || manifestData; // Fallback for old format
 
     // Create a unique database name per application origin
     // This prevents multiple apps on the same domain from sharing IndexedDB
     const databaseName = this.generateDatabaseName();
 
-    // Create database
+    // Create database with timestamp-based version (like Laravel migrations)
     const dbConfig: DuoConfig = {
       databaseName,
-      databaseVersion: 1,
-      stores: manifest,
+      databaseVersion: schemaVersion,
+      stores,
       debug: this.config.debug,
     };
 
@@ -376,7 +381,13 @@ export async function remove(table: string, id: number | string): Promise<void> 
   const existing = await store.get(id);
   if (!existing) return;
 
-  await store.delete(id);
+  // Mark as pending deletion instead of deleting immediately
+  // This allows the sync status component to count it as pending
+  await store.put({
+    ...existing,
+    _duo_pending_sync: true,
+    _duo_operation: 'delete' as const,
+  });
 
   // Queue for sync
   await duo.getSyncQueue()!.enqueue({

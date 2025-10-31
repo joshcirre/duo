@@ -73,6 +73,242 @@ Role-based automatic conflict resolution.
 
 ## 🎯 Medium Priority
 
+### User-Aware Conflict Resolution Component
+Simple, user-friendly component for resolving conflicts across users and devices.
+
+**Status:** 💭 Concept
+**Complexity:** Medium
+**Depends on:** Seamless Conflict Resolution
+**Related to:** Multiplayer Mode (Duet)
+
+**Problem:** When conflicts occur (same user on different devices, or different users editing the same data), users need a simple, intuitive way to understand and resolve them.
+
+**Proposed Solution:**
+A drop-in Blade component that shows conflicts with user attribution and simple accept/deny actions.
+
+```blade
+{{-- Automatically detects and displays conflicts --}}
+<x-duo::conflict-resolver model="Todo" />
+
+{{-- Or with custom configuration --}}
+<x-duo::conflict-resolver
+    model="Todo"
+    :show-user-info="true"
+    :auto-resolve-strategy="'newest-wins'"
+    :require-permission="'resolve-conflicts'"
+/>
+```
+
+**User Experience:**
+
+**Scenario 1: Multi-User Conflicts**
+```
+┌─────────────────────────────────────────────┐
+│ ⚠️  Conflict Detected                       │
+│                                             │
+│ Ben has 3 changes that overwrite yours:     │
+│                                             │
+│ • Todo: "Buy milk" → "Buy oat milk"         │
+│ • Todo: "Meeting at 3pm" (deleted)          │
+│ • Todo: "Call Sarah" → "Call Sarah ASAP"    │
+│                                             │
+│ [Accept Ben's Changes] [Keep Mine]          │
+└─────────────────────────────────────────────┘
+```
+
+**Scenario 2: Multi-Device Conflicts (Same User)**
+```
+┌─────────────────────────────────────────────┐
+│ ⚠️  Sync Conflict                           │
+│                                             │
+│ Your laptop has 2 changes made offline      │
+│ while your phone was editing:               │
+│                                             │
+│ Laptop (offline):                           │
+│ • Todo: "Call dentist" (completed)          │
+│ • Todo: "Buy groceries" → "Buy healthy food"│
+│                                             │
+│ Phone (current):                            │
+│ • Todo: "Call dentist" (still pending)      │
+│ • Todo: "Buy groceries" (unchanged)         │
+│                                             │
+│ [Use Laptop Version] [Use Phone Version]    │
+│ [Merge Changes]                             │
+└─────────────────────────────────────────────┘
+```
+
+**Features:**
+
+1. **User Attribution:**
+   - Shows who made conflicting changes (name, device, timestamp)
+   - Differentiates between different users vs. same user on different devices
+   - Shows number of conflicting changes
+
+2. **Simple Actions:**
+   - Accept/Deny buttons for conflicts
+   - Optional "Merge" for compatible changes
+   - Batch resolve (accept all, deny all)
+
+3. **Permission-Based Control:**
+   ```php
+   // In component config
+   'conflict_permissions' => [
+       'can_resolve' => 'resolve-conflicts',      // Who can manually resolve
+       'auto_resolve' => [
+           'admin' => 'always-accept',            // Admins auto-win
+           'moderator' => 'accept-over-user',     // Mods win over users
+           'user' => 'manual-review',             // Users see the UI
+       ],
+   ],
+   ```
+
+4. **Device-Aware Resolution:**
+   - Detects when same user has conflicting changes on different devices
+   - Shows device names (e.g., "Your MacBook Pro", "Your iPhone")
+   - Offers "Use newest" or "Use from [device name]"
+
+5. **Visual Diff:**
+   ```blade
+   {{-- Show what changed --}}
+   <div class="conflict-diff">
+       <div class="before">
+           <span class="label">Your version:</span>
+           "Buy milk"
+       </div>
+       <div class="after">
+           <span class="label">Ben's version:</span>
+           "Buy oat milk"
+       </div>
+   </div>
+   ```
+
+**Component API:**
+
+```php
+// Livewire component
+use JoshCirre\Duo\Components\ConflictResolver;
+
+class ConflictResolver extends Component
+{
+    public string $model;              // Model class (e.g., Todo::class)
+    public bool $showUserInfo = true;  // Show user attribution
+    public ?string $requirePermission = null; // Gate check
+
+    // Automatically populated by Duo
+    public Collection $conflicts;      // List of detected conflicts
+
+    public function acceptChanges(array $conflictIds)
+    {
+        // Accept specific conflicts
+    }
+
+    public function denyChanges(array $conflictIds)
+    {
+        // Keep local version
+    }
+
+    public function mergeChanges(int $conflictId, array $mergeStrategy)
+    {
+        // Custom merge logic
+    }
+}
+```
+
+**Conflict Detection:**
+
+Duo automatically tracks:
+- Who made the change (`user_id`, `user_name`)
+- When it was made (`updated_at`, `synced_at`)
+- Which device (from user agent or device identifier)
+- What changed (before/after values)
+
+```json
+{
+  "conflict_id": "abc123",
+  "model": "App\\Models\\Todo",
+  "record_id": 42,
+  "field": "title",
+  "local_value": "Buy milk",
+  "remote_value": "Buy oat milk",
+  "local_user": { "id": 1, "name": "You" },
+  "remote_user": { "id": 2, "name": "Ben" },
+  "local_device": "MacBook Pro",
+  "remote_device": "iPhone 14",
+  "local_timestamp": "2025-01-30 14:30:00",
+  "remote_timestamp": "2025-01-30 14:31:00"
+}
+```
+
+**Auto-Resolution Strategies:**
+
+```php
+// config/duo.php
+'conflict_resolution' => [
+    'strategy' => 'smart',  // smart, manual, newest, permission-based
+
+    'smart_rules' => [
+        // Same user, different devices → newest wins
+        'same_user_multi_device' => 'newest-wins',
+
+        // Different users → show UI
+        'multi_user' => 'manual-review',
+
+        // Admin vs anyone → admin wins
+        'permission_hierarchy' => true,
+    ],
+],
+```
+
+**Benefits:**
+- 🎯 Simple, user-friendly conflict resolution
+- 👥 Shows WHO made changes, not just WHAT changed
+- 📱 Device-aware (knows if it's your phone vs laptop)
+- 🔐 Permission-based control over resolution
+- ⚡ Auto-resolve simple cases, prompt for complex ones
+- 🎨 Beautiful, accessible UI out of the box
+
+**Use Cases:**
+- Collaborative todo apps (multiple users editing same list)
+- Multi-device editing (same user on phone + laptop)
+- Team dashboards with concurrent edits
+- Offline mobile app syncing back to desktop
+- Content management with multiple editors
+
+**Implementation Challenges:**
+- Tracking device identifiers reliably
+- Storing conflict metadata efficiently
+- Designing intuitive merge UI
+- Handling cascading conflicts (A conflicts with B which conflicts with C)
+- Performance with many simultaneous conflicts
+
+**Example Usage:**
+
+```blade
+{{-- In your Livewire component view --}}
+<div>
+    <h1>My Todos</h1>
+
+    {{-- Conflict resolver automatically shows when conflicts exist --}}
+    <x-duo::conflict-resolver
+        model="App\Models\Todo"
+        :show-user-info="true"
+    />
+
+    {{-- Your normal todo list --}}
+    @foreach($this->todos as $todo)
+        <div>{{ $todo->title }}</div>
+    @endforeach
+</div>
+```
+
+**Related Features:**
+- Builds on "Seamless Conflict Resolution" (High Priority)
+- Integrates with "Permission-Based Conflict Resolution" (High Priority)
+- Would be enhanced by "Multiplayer Mode (Duet)" for real-time conflict prevention
+- Could use "Debug Dashboard" to inspect conflict history
+
+---
+
 ### Multiplayer Mode ("Duet")
 Real-time sync across multiple users/devices using Laravel Echo/Reverb.
 
@@ -476,6 +712,46 @@ The type-safe system makes adding new options straightforward:
 
 ## 🚧 In Progress
 
+### Move x-data Addition to Blade Source Level
+Eliminate the HTML transformation phase by adding x-data at the Blade source level.
+
+**Status:** 🚧 In Progress
+**Complexity:** Medium
+
+**Current Approach:**
+- Transform Blade source (wire: directives, @foreach, @if/@else)
+- Render transformed Blade to HTML
+- Find root element in HTML and add x-data
+
+**Proposed Approach:**
+Transform everything at Blade source level, including x-data injection.
+
+**Potential Solutions:**
+
+**Option 1: Custom Blade Directive (Explicit)**
+```blade
+<div @duoInit>
+    <!-- component content -->
+</div>
+```
+Transform `@duoInit` → `x-data="{...}"` at Blade source level.
+
+**Option 2: Auto-detect Root Element**
+Find first `<div>` after PHP block and inject x-data attribute.
+
+**Option 3: Convention-Based**
+Require root element to have a specific class or attribute.
+
+**Benefits:**
+- ✅ Single transformation phase (Blade source only)
+- ✅ Simpler pipeline
+- ✅ No HTML parsing needed
+- ✅ Cleaner architecture
+
+**Decision Needed:** Choose between explicit directive (Option 1) vs. auto-detection (Option 2)
+
+---
+
 ### Database Schema Extraction & TypeScript Types
 Auto-generate schema information and TypeScript types from Eloquent models.
 
@@ -508,6 +784,120 @@ interface Todo {
 ---
 
 ## 💡 Future Ideas
+
+### Global Offline Mode
+Enable site-wide offline-first mode with a single configuration flag.
+
+**Status:** 💭 Concept
+**Complexity:** High
+
+**Problem:** Currently, Duo requires component-level setup (WithDuo trait) and individual page optimization. For demo apps or apps that want full offline capability, this can be tedious.
+
+**Proposed Solution:**
+A global configuration option that makes the entire application offline-first by default, automatically caching all pages in the service worker and enabling offline mode for all components with the `WithDuo` trait.
+
+```php
+// config/duo.php
+'global_offline_mode' => env('DUO_GLOBAL_OFFLINE', false),
+```
+
+**How It Works:**
+
+1. **Service Worker Auto-Registration:**
+   - When `global_offline_mode => true`, Duo automatically registers a service worker
+   - Service worker caches all visited pages (HTML, CSS, JS, assets)
+   - Site becomes a full Progressive Web App (PWA)
+
+2. **Automatic Static Fallback:**
+   - All pages without `WithDuo` components work offline as static cached pages
+   - No interactivity, but users can still browse cached content
+
+3. **Enhanced Offline Components:**
+   - Any component with `WithDuo` trait automatically gets full offline functionality
+   - No additional configuration needed
+   - Works seamlessly within the cached static pages
+
+4. **Intelligent Cache Strategy:**
+   ```php
+   'cache_strategy' => [
+       'pages' => 'network-first',      // Try network, fallback to cache
+       'assets' => 'cache-first',       // Serve from cache, update in background
+       'api' => 'network-only',         // Always fresh data when online
+   ],
+   ```
+
+**Example Configuration:**
+
+```php
+// Full offline mode for demo apps
+'global_offline_mode' => true,
+'offline_config' => [
+    'cache_all_pages' => true,           // Cache every visited page
+    'cache_all_assets' => true,          // Cache CSS/JS/images
+    'show_offline_indicator' => true,    // UI indicator when offline
+    'preload_routes' => [                // Pre-cache these routes on install
+        '/',
+        '/dashboard',
+        '/todos',
+    ],
+    'max_cache_age' => 86400,            // Cache TTL in seconds (24h)
+    'excluded_routes' => [               // Don't cache these
+        '/admin/*',
+        '/api/external/*',
+    ],
+],
+```
+
+**User Experience:**
+
+```blade
+{{-- Developer writes normal Blade --}}
+<x-app-layout>
+    <h1>My Page</h1>
+
+    {{-- This component automatically works offline when global mode enabled --}}
+    <livewire:todo-list />  {{-- Uses WithDuo trait --}}
+
+    {{-- Static content also cached and works offline --}}
+    <div>This static content is cached too!</div>
+</x-app-layout>
+```
+
+**Benefits:**
+- 🚀 Zero-config offline mode for entire application
+- 📱 Instant PWA capabilities
+- 🎯 Perfect for demos, prototypes, and MVPs
+- ✨ Static pages work offline (read-only)
+- ⚡ WithDuo components get full offline CRUD
+- 🔄 Seamless online/offline transitions
+
+**Implementation Challenges:**
+- Service worker lifecycle management
+- Cache invalidation strategies
+- Handling authenticated routes offline
+- Asset versioning and cache busting
+- Memory/storage quota management
+- Conflict resolution when pages update
+
+**Potential Issues:**
+- May cache too aggressively for production apps
+- Stale content if not managed carefully
+- Storage quota limits on mobile devices
+- Complexity of cache invalidation
+
+**Use Cases:**
+- Demo applications showcasing Duo capabilities
+- Offline-first prototypes
+- Internal tools with spotty connectivity
+- Progressive Web Apps (PWAs)
+- Mobile apps built with Laravel
+
+**Related Features:**
+- Builds on "Full Page Caching" (High Priority)
+- Could integrate with "Background Sync Service Worker" (Future Ideas)
+- May require "Debug Dashboard" for cache management (Future Ideas)
+
+---
 
 ### Future Configuration Options
 Potential new configuration options to add to `DuoConfig`.

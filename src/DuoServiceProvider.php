@@ -9,6 +9,7 @@ use Illuminate\Support\ServiceProvider;
 use JoshCirre\Duo\Commands\DiscoverModelsCommand;
 use JoshCirre\Duo\Commands\GenerateManifestCommand;
 use JoshCirre\Duo\Http\Controllers\DuoSyncController;
+use JoshCirre\Duo\Http\Middleware\DuoDebugMiddleware;
 use Livewire\Livewire;
 
 final class DuoServiceProvider extends ServiceProvider
@@ -96,6 +97,12 @@ final class DuoServiceProvider extends ServiceProvider
                 ]);
         })->name('duo.service-worker');
 
+        // Register debug middleware globally for all routes (local only)
+        if ($this->app->environment('local')) {
+            $router = $this->app->make(\Illuminate\Routing\Router::class);
+            $router->pushMiddlewareToGroup('web', DuoDebugMiddleware::class);
+        }
+
         // API routes for sync
         // Note: Using 'web' middleware instead of 'api' because:
         // 1. This is a same-origin SPA, not a separate API client
@@ -139,9 +146,21 @@ final class DuoServiceProvider extends ServiceProvider
             return;
         }
 
-        // Hook into Livewire's render event to transform HTML for Duo components
+        // Hook into Livewire's render event to transform Blade source for Duo components
         $eventBus->on('render', function ($component, $view, $properties) {
             \Log::info('[Duo] Render event triggered for component: '.get_class($component));
+
+            // Check if transformations are enabled (for debugging purposes in local environment)
+            // This is set by DuoDebugMiddleware
+            $transformationsEnabled = app()->bound('duo.transformations.enabled')
+                ? app('duo.transformations.enabled')
+                : true;
+            if (! $transformationsEnabled) {
+                \Log::info('[Duo] Transformations disabled via debug toggle - skipping');
+
+                return null;
+            }
+
             // Check if component uses WithDuo trait
             if (! in_array(\JoshCirre\Duo\WithDuo::class, class_uses_recursive($component))) {
                 \Log::info('[Duo] Component does NOT use WithDuo trait');
@@ -149,56 +168,74 @@ final class DuoServiceProvider extends ServiceProvider
                 return null;
             }
 
-            \Log::info('[Duo] Component DOES use Duo trait - will transform HTML');
+            \Log::info('[Duo] Component DOES use Duo trait - will transform Blade source');
 
             // Set a flag to indicate this page has a Duo-enabled component
             // This will be used by @duoMeta to conditionally enable offline caching
             app()->instance('duo.has_enabled_component', true);
 
-            // Return a finisher callback that will transform the HTML
-            return function ($html, $replaceHtml = null, $viewContext = null) use ($properties, $view, $component) {
-                \Log::info('[Duo] Finisher callback called with HTML length: '.strlen($html));
+            // Get Blade source file path
+            $bladePath = $view->getPath();
+            if (! $bladePath || ! file_exists($bladePath)) {
+                \Log::warning('[Duo] Could not find Blade source file');
 
-                // Get Blade source file path
-                $bladePath = $view->getPath();
-                if (! $bladePath || ! file_exists($bladePath)) {
-                    \Log::warning('[Duo] Could not find Blade source file');
+                return null;
+            }
 
-                    return $html;
-                }
+            $bladeSource = file_get_contents($bladePath);
+            \Log::info('[Duo] Read Blade source', [
+                'path' => $bladePath,
+                'length' => strlen($bladeSource),
+            ]);
 
-                $bladeSource = file_get_contents($bladePath);
-                \Log::info('[Duo] Read Blade source', [
-                    'path' => $bladePath,
-                    'length' => strlen($bladeSource),
-                ]);
+            // Get view data and computed properties
+            $viewData = method_exists($view, 'getData') ? $view->getData() : [];
+            $computedProperties = $this->getComputedProperties($component);
+            $allData = array_merge($properties, $viewData, $computedProperties);
 
-                // Get view data
-                $viewData = method_exists($view, 'getData') ? $view->getData() : [];
+            \Log::info('[Duo] Combined data for transformation', ['keys' => array_keys($allData)]);
 
-                // Get computed properties from the component
-                $computedProperties = $this->getComputedProperties($component);
-                \Log::info('[Duo] Computed properties found', ['properties' => array_keys($computedProperties)]);
+            // Transform the Blade source (add x-show wrappers for @if/@else)
+            $transformer = new \JoshCirre\Duo\BladeToAlpineTransformer(
+                $bladeSource,
+                null, // No rendered HTML yet
+                $allData,
+                [],
+                $component,
+                null
+            );
 
-                // Combine view data, component properties, and computed properties
-                $allData = array_merge($properties, $viewData, $computedProperties);
-                \Log::info('[Duo] Combined data', ['keys' => array_keys($allData)]);
+            $transformedBlade = $transformer->transformBladeSource();
+            \Log::info('[Duo] Transformed Blade source', [
+                'originalLength' => strlen($bladeSource),
+                'transformedLength' => strlen($transformedBlade),
+            ]);
 
-                // Detect public methods on the component
-                $componentMethods = $this->getComponentMethods($component);
-                \Log::info('[Duo] Component methods detected', ['count' => count($componentMethods)]);
+            // Return a finisher callback that renders the transformed Blade and does HTML transformations
+            return function ($html, $replaceHtml = null, $viewContext = null) use ($transformedBlade, $allData, $component) {
+                \Log::info('[Duo] Finisher callback - rendering transformed Blade');
 
-                // Use the new Blade Parser-based transformer
                 try {
+                    // Render the transformed Blade with the component data
+                    $renderedHtml = \Blade::render($transformedBlade, $allData);
+
+                    \Log::info('[Duo] Rendered transformed Blade', [
+                        'length' => strlen($renderedHtml),
+                    ]);
+
+                    // Now do HTML-level transformations (wire:model, loops, etc.)
+                    $componentMethods = $this->getComponentMethods($component);
+
                     $transformer = new \JoshCirre\Duo\BladeToAlpineTransformer(
-                        $bladeSource,
-                        $html,
+                        $transformedBlade,
+                        $renderedHtml,
                         $allData,
                         $componentMethods,
-                        $component
+                        $component,
+                        null
                     );
 
-                    return $transformer->transform();
+                    return $transformer->transformHtml();
                 } catch (\Exception $e) {
                     \Log::error('[Duo] Transformation failed: '.$e->getMessage(), [
                         'exception' => $e,
@@ -546,6 +583,65 @@ final class DuoServiceProvider extends ServiceProvider
 
             return [];
         }
+    }
+
+    /**
+     * Extract ORDER BY from computed property methods by analyzing their queries
+     */
+    protected function extractOrderByFromComputedProperties($component, array $allData): ?array
+    {
+        $orderByInfo = [];
+        $reflection = new \ReflectionClass($component);
+
+        foreach ($reflection->getMethods(\ReflectionMethod::IS_PUBLIC) as $method) {
+            // Skip if not from the current class
+            if ($method->getDeclaringClass()->getName() !== get_class($component)) {
+                continue;
+            }
+
+            // Check if method has Computed attribute
+            $attributes = $method->getAttributes();
+            $hasComputedAttribute = false;
+
+            foreach ($attributes as $attribute) {
+                $attributeName = $attribute->getName();
+                if ($attributeName === 'Livewire\Attributes\Computed' ||
+                    str_ends_with($attributeName, '\Computed')) {
+                    $hasComputedAttribute = true;
+                    break;
+                }
+            }
+
+            if ($hasComputedAttribute) {
+                $methodName = $method->getName();
+
+                // Enable query logging
+                \DB::enableQueryLog();
+                \DB::flushQueryLog();
+
+                try {
+                    // Execute the method to capture queries
+                    $component->$methodName;
+
+                    // Get the queries
+                    $queries = \DB::getQueryLog();
+
+                    // Extract orderBy from queries
+                    $orderBy = $this->extractOrderBy($queries);
+
+                    if ($orderBy) {
+                        // Map this orderBy to the property name (collection name)
+                        $orderByInfo[$methodName] = $orderBy;
+                    }
+                } catch (\Exception $e) {
+                    \Log::warning("[Duo] Failed to extract orderBy for $methodName: ".$e->getMessage());
+                }
+
+                \DB::flushQueryLog();
+            }
+        }
+
+        return $orderByInfo ?: null;
     }
 
     /**

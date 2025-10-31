@@ -29,19 +29,23 @@ class BladeToAlpineTransformer
 
     protected array $duoConfig;
 
+    protected ?array $orderBy;
+
     public function __construct(
         string $bladeSource,
-        string $renderedHtml,
+        ?string $renderedHtml,
         array $componentData,
         array $componentMethods,
-        object $component
+        object $component,
+        ?array $orderBy = null
     ) {
         $this->bladeDocument = Document::fromText($bladeSource);
         $this->bladeDocument->resolveStructures();
-        $this->renderedHtml = $renderedHtml;
+        $this->renderedHtml = $renderedHtml ?? '';
         $this->componentData = $componentData;
         $this->componentMethods = $componentMethods;
         $this->component = $component;
+        $this->orderBy = $orderBy;
 
         // Extract Duo configuration from component if available
         $this->duoConfig = $this->extractDuoConfig();
@@ -93,33 +97,440 @@ class BladeToAlpineTransformer
     }
 
     /**
-     * Transform the component to use Alpine.js
+     * Transform the Blade source BEFORE rendering
+     * This does ALL transformations: wire:model, @if/@else, loops, x-data
      */
-    public function transform(): string
+    public function transformBladeSource(): string
     {
-        \Log::info('[Duo] Starting Blade-to-Alpine transformation using Blade Parser', [
-            'componentData' => array_map(function ($v) {
-                return is_object($v) ? get_class($v) : gettype($v).': '.json_encode($v);
-            }, $this->componentData),
-        ]);
+        \Log::info('[Duo] Starting Blade source transformation');
+
+        $blade = $this->bladeDocument->toString();
+
+        // Step 1: Replace wire: directives with Alpine equivalents
+        $blade = preg_replace('/wire:model(?:\.live)?="([^"]+)"/i', 'x-model="$1"', $blade);
+        $blade = preg_replace('/wire:submit="([^"]+)"/i', '@submit.prevent="$1"', $blade);
+        $blade = preg_replace('/wire:click="([^"]+)"/i', '@click="$1"', $blade);
+
+        // Step 3: Transform @foreach loops FIRST (before @if/@else)
+        // This ensures that when we extract @if/@else branch content, the @foreach is already converted to Alpine
+        $blade = $this->transformForeachInBladeSource($blade);
+
+        // Step 4: Find all @if directives that check for empty/not-empty collections
+        // We need to re-parse after changes
+        $this->bladeDocument = Document::fromText($blade);
+        $this->bladeDocument->resolveStructures();
+
+        $ifDirectives = $this->bladeDocument->findDirectivesByName('if');
+
+        foreach ($ifDirectives->all() as $directive) {
+            if (! $directive->structure) {
+                continue;
+            }
+
+            // Get the condition from the directive
+            $condition = $directive->arguments->content ?? '';
+            $collectionCheck = $this->detectCollectionCondition($condition);
+            if (! $collectionCheck) {
+                continue;
+            }
+
+            \Log::info('[Duo] Found collection conditional', [
+                'collection' => $collectionCheck['collection'],
+                'checksEmpty' => $collectionCheck['checksEmpty'],
+            ]);
+
+            // Transform this @if/@else in the Blade source
+            $blade = $this->transformConditionalInSource($blade, $directive, $collectionCheck);
+
+            // Re-parse after modifying
+            $this->bladeDocument = Document::fromText($blade);
+            $this->bladeDocument->resolveStructures();
+        }
+
+        \Log::info('[Duo] Blade source transformation complete');
+
+        return $blade;
+    }
+
+    /**
+     * Transform the rendered HTML
+     * ONLY adds x-data to the root element - all other transformations happen at Blade source level
+     */
+    public function transformHtml(): string
+    {
+        \Log::info('[Duo] Starting HTML transformation');
 
         $html = $this->renderedHtml;
 
-        // Step 1: Replace wire:model with x-model
-        $html = $this->replaceWireModel($html);
-
-        // Step 2: Replace wire:submit with @submit
-        $html = $this->replaceWireSubmit($html);
-
-        // Step 3: Transform @foreach/@forelse loops to Alpine x-for
-        $html = $this->transformLoops($html);
-
-        // Step 4: Add Alpine x-data to root element
+        // Add Alpine x-data to root element (the ONLY thing we do at HTML level)
         $html = $this->addAlpineXData($html);
 
-        \Log::info('[Duo] Blade-to-Alpine transformation complete');
+        \Log::info('[Duo] HTML transformation complete');
 
         return $html;
+    }
+
+    /**
+     * Transform an @if/@else conditional in the Blade source
+     */
+    protected function transformConditionalInSource(string $blade, DirectiveNode $directive, array $collectionCheck): string
+    {
+        $collectionName = $collectionCheck['collection'];
+        $checksEmpty = $collectionCheck['checksEmpty'];
+
+        $structure = $directive->structure;
+        $primaryBranch = $structure->getPrimaryBranch(); // @if branch
+        $elseBranches = $structure->getElseBranches();
+        $elseBranch = $elseBranches[0] ?? null;
+
+        if (! $elseBranch) {
+            \Log::warning('[Duo] No @else branch found, skipping');
+
+            return $blade;
+        }
+
+        // Get the full source text of the @if/@else/@endif block
+        // We need to find the @endif directive
+        $ifStart = $directive->position->startOffset;
+
+        // Find the @endif directive that corresponds to this @if
+        $endifNode = $this->findMatchingEndif($directive);
+        if (! $endifNode) {
+            \Log::warning('[Duo] Could not find matching @endif');
+            return $blade;
+        }
+
+        $endifEnd = $endifNode->position->endOffset;
+
+        $fullConditional = substr($blade, $ifStart, $endifEnd - $ifStart);
+
+        \Log::info('[Duo] Extracting conditional block', [
+            'ifStart' => $ifStart,
+            'endifEnd' => $endifEnd,
+            'length' => strlen($fullConditional),
+        ]);
+
+        // Extract the content between @if and @else
+        $elseDirective = $elseBranch->target;
+
+        // Log the exact positions and surrounding characters
+        \Log::info('[Duo] Directive positions', [
+            'if_startOffset' => $directive->position->startOffset,
+            'if_endOffset' => $directive->position->endOffset,
+            'if_directive' => substr($blade, $directive->position->startOffset, 30),
+            'else_startOffset' => $elseDirective->position->startOffset,
+            'else_endOffset' => $elseDirective->position->endOffset,
+            'else_directive' => substr($blade, $elseDirective->position->startOffset, 10),
+            'endif_startOffset' => $endifNode->position->startOffset,
+            'endif_endOffset' => $endifNode->position->endOffset,
+            'endif_directive' => substr($blade, $endifNode->position->startOffset, 10),
+        ]);
+
+        $rawPrimaryContent = substr($blade, $directive->position->endOffset, $elseDirective->position->startOffset - $directive->position->endOffset);
+
+        // Skip past the newline after the @if directive, and trim whitespace before @else
+        $primaryContent = preg_replace('/^[^\n]*\n/', '', $rawPrimaryContent, 1);
+        $primaryContent = rtrim($primaryContent);
+
+        // Extract the content between @else and @endif
+        $rawElseContent = substr($blade, $elseDirective->position->endOffset, $endifNode->position->startOffset - $elseDirective->position->endOffset);
+
+        // Skip past the newline after the @else directive, and trim whitespace before @endif
+        $elseContent = preg_replace('/^[^\n]*\n/', '', $rawElseContent, 1);
+        $elseContent = rtrim($elseContent);
+
+        \Log::info('[Duo] Extracted branch contents', [
+            'primaryLength' => strlen($primaryContent),
+            'elseLength' => strlen($elseContent),
+            'primaryStart' => substr($primaryContent, 0, 50),
+            'primaryEnd' => substr($primaryContent, -50),
+            'elseStart' => substr($elseContent, 0, 50),
+            'elseEnd' => substr($elseContent, -50),
+        ]);
+
+        // Determine which branch is the empty state
+        if ($checksEmpty) {
+            $emptyContent = trim($primaryContent);
+            $hasItemsContent = trim($elseContent);
+        } else {
+            $emptyContent = trim($elseContent);
+            $hasItemsContent = trim($primaryContent);
+        }
+
+        // Add x-show attributes to the first element in each branch
+        // This preserves the original structure and doesn't break parent spacing classes
+        $emptyWithXShow = $this->addXShowToFirstElement($emptyContent, "{$collectionName}.length === 0");
+        $itemsWithXShow = $this->addXShowToFirstElement($hasItemsContent, "{$collectionName}.length > 0");
+
+        $replacement = trim($emptyWithXShow) . "\n" . trim($itemsWithXShow);
+
+        \Log::info('[Duo] Built replacement', [
+            'replacementLength' => strlen($replacement),
+        ]);
+
+        // Replace in the source (add +1 to include the last character of @endif)
+        $transformed = substr_replace($blade, $replacement, $ifStart, ($endifEnd + 1) - $ifStart);
+
+        return $transformed;
+    }
+
+    /**
+     * Add x-show attribute to the first element in the content
+     */
+    protected function addXShowToFirstElement(string $content, string $condition): string
+    {
+        // Find the first opening tag (either <div, <template, <p, etc.)
+        if (preg_match('/<(\w+)(\s[^>]*)?>/i', $content, $matches, PREG_OFFSET_CAPTURE)) {
+            $tagName = $matches[1][0];
+            $existingAttrs = $matches[2][0] ?? '';
+            $tagStart = $matches[0][1];
+            $tagLength = strlen($matches[0][0]);
+
+            // Build the new opening tag with x-show
+            $newTag = "<{$tagName}{$existingAttrs} x-show=\"{$condition}\">";
+
+            // Replace the original tag
+            return substr_replace($content, $newTag, $tagStart, $tagLength);
+        }
+
+        // If no element found, wrap with div (fallback)
+        return "<div x-show=\"{$condition}\">\n{$content}\n</div>";
+    }
+
+    /**
+     * Transform @foreach loops in the Blade source to Alpine x-for
+     */
+    protected function transformForeachInBladeSource(string $blade): string
+    {
+        \Log::info('[Duo] Transforming @foreach loops in Blade source');
+
+        // Re-parse to get fresh structures
+        $this->bladeDocument = Document::fromText($blade);
+        $this->bladeDocument->resolveStructures();
+
+        $foreachDirectives = $this->bladeDocument->findDirectivesByName('foreach');
+
+        foreach ($foreachDirectives->all() as $directive) {
+            $loopInfo = $this->parseLoopArguments($directive->arguments->content ?? '');
+            if (! $loopInfo) {
+                continue;
+            }
+
+            $collectionName = $loopInfo['collection'];
+            $itemVarName = $loopInfo['itemVar'];
+
+            // Check if this collection is in our component data
+            if (! isset($this->componentData[$collectionName])) {
+                continue;
+            }
+
+            \Log::info('[Duo] Transforming @foreach in source', [
+                'collection' => $collectionName,
+                'itemVar' => $itemVarName,
+            ]);
+
+            // Find the matching @endforeach
+            $endforeachNode = $this->findMatchingEndforeach($directive);
+            if (! $endforeachNode) {
+                \Log::warning('[Duo] Could not find matching @endforeach');
+                continue;
+            }
+
+            // Extract the content between @foreach and @endforeach
+            $foreachStart = $directive->position->startOffset;
+            $foreachEnd = $directive->position->endOffset;
+            $endforeachStart = $endforeachNode->position->startOffset;
+            $endforeachEnd = $endforeachNode->position->endOffset;
+
+            \Log::info('[Duo] Foreach positions', [
+                'foreach_startOffset' => $foreachStart,
+                'foreach_endOffset' => $foreachEnd,
+                'foreach_directive' => substr($blade, $foreachStart, 40),
+                'endforeach_startOffset' => $endforeachStart,
+                'endforeach_endOffset' => $endforeachEnd,
+                'endforeach_directive' => substr($blade, $endforeachStart, 15),
+                'char_before_endforeach' => substr($blade, $endforeachStart - 1, 1),
+                'char_at_endforeach' => substr($blade, $endforeachStart, 1),
+            ]);
+
+            $rawLoopContent = substr($blade, $foreachEnd, $endforeachStart - $foreachEnd);
+
+            \Log::info('[Duo] Raw loop extraction', [
+                'length' => strlen($rawLoopContent),
+                'first_10_chars' => substr($rawLoopContent, 0, 10),
+                'last_10_chars' => substr($rawLoopContent, -10),
+            ]);
+
+            // Skip past the newline after the @foreach directive, and trim whitespace before @endforeach
+            $loopContent = preg_replace('/^[^\n]*\n/', '', $rawLoopContent, 1);
+            $loopContent = rtrim($loopContent);
+
+            // Transform the loop content to Alpine
+            $transformedContent = $this->transformLoopContentToAlpine($loopContent, $itemVarName);
+
+            // Build the collection expression with sorting if available
+            $collectionExpr = $this->buildCollectionExpression($collectionName);
+
+            // Wrap with x-for template
+            $replacement = <<<BLADE
+<template x-for="{$itemVarName} in {$collectionExpr}" :key="{$itemVarName}.id">
+{$transformedContent}
+</template>
+BLADE;
+
+            // Replace the @foreach...@endforeach block (add +1 to include the last character of @endforeach)
+            $blade = substr_replace(
+                $blade,
+                $replacement,
+                $foreachStart,
+                ($endforeachNode->position->endOffset + 1) - $foreachStart
+            );
+
+            // Re-parse after modifying
+            $this->bladeDocument = Document::fromText($blade);
+            $this->bladeDocument->resolveStructures();
+        }
+
+        return $blade;
+    }
+
+    /**
+     * Build collection expression with sorting if available
+     */
+    protected function buildCollectionExpression(string $collectionName): string
+    {
+        // Check if we have orderBy information for this collection
+        if (!$this->orderBy || !isset($this->orderBy[$collectionName])) {
+            return $collectionName;
+        }
+
+        $orderInfo = $this->orderBy[$collectionName];
+        $column = $orderInfo['column'];
+        $direction = $orderInfo['direction'] ?? 'asc';
+
+        // Build JavaScript sort expression
+        // For descending: array.sort((a, b) => b.column > a.column ? 1 : -1)
+        // For ascending: array.sort((a, b) => a.column > b.column ? 1 : -1)
+        if ($direction === 'desc') {
+            return "[...{$collectionName}].sort((a, b) => {
+                const aVal = a.{$column};
+                const bVal = b.{$column};
+                if (aVal === bVal) return 0;
+                return bVal > aVal ? 1 : -1;
+            })";
+        }
+
+        return "[...{$collectionName}].sort((a, b) => {
+            const aVal = a.{$column};
+            const bVal = b.{$column};
+            if (aVal === bVal) return 0;
+            return aVal > bVal ? 1 : -1;
+        })";
+    }
+
+    /**
+     * Transform loop content from Blade to Alpine
+     */
+    protected function transformLoopContentToAlpine(string $content, string $itemVar): string
+    {
+        // Remove wire:key attributes
+        $content = preg_replace('/\s*wire:key="[^"]*"/', '', $content);
+
+        // Transform @click="method({{ $item }})" to @click="method(item)"
+        // Note: wire:click has already been converted to @click by the global replacement
+        $content = preg_replace_callback(
+            '/@click="(\w+)\(\{\{\s*\$' . $itemVar . '\s*\}\}\)"/',
+            function ($matches) use ($itemVar) {
+                $method = $matches[1];
+                return '@click="' . $method . '(' . $itemVar . ')"';
+            },
+            $content
+        );
+
+        // Transform {{ $item->property }} expressions
+        // Replace with <span x-text="..."></span>
+        $content = preg_replace_callback(
+            '/\{\{\s*\$' . $itemVar . '->(\w+)(?:->(\w+)\(\))?\s*\}\}/',
+            function ($matches) use ($itemVar) {
+                $property = $matches[1];
+                $method = $matches[2] ?? null;
+
+                // Handle method calls like ->created_at->diffForHumans()
+                if ($method) {
+                    return '<span x-text="diffForHumans(' . $itemVar . '.' . $property . ', _now)"></span>';
+                }
+                return '<span x-text="' . $itemVar . '.' . $property . '"></span>';
+            },
+            $content
+        );
+
+        return $content;
+    }
+
+    /**
+     * Find the matching @endforeach for a @foreach directive
+     */
+    protected function findMatchingEndforeach(DirectiveNode $foreachDirective): ?DirectiveNode
+    {
+        $depth = 0;
+        $foreachPosition = $foreachDirective->position->startOffset;
+
+        foreach ($this->bladeDocument->getNodes() as $node) {
+            if (! $node instanceof DirectiveNode) {
+                continue;
+            }
+
+            if ($node->position->startOffset < $foreachPosition) {
+                continue;
+            }
+
+            // Track nesting depth
+            if ($node->content === 'foreach' || $node->content === 'forelse') {
+                $depth++;
+            } elseif ($node->content === 'endforeach' || $node->content === 'endforelse') {
+                $depth--;
+                if ($depth === 0) {
+                    return $node;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Find the matching @endif for an @if directive
+     */
+    protected function findMatchingEndif(DirectiveNode $ifDirective): ?DirectiveNode
+    {
+        $allDirectives = $this->bladeDocument->findDirectivesByName('endif')->all();
+
+        // Find the first @endif that comes after this @if
+        // We need to match nesting depth
+        $depth = 0;
+        $ifPosition = $ifDirective->position->startOffset;
+
+        foreach ($this->bladeDocument->getNodes() as $node) {
+            if (! $node instanceof DirectiveNode) {
+                continue;
+            }
+
+            if ($node->position->startOffset < $ifPosition) {
+                continue;
+            }
+
+            // Track nesting depth
+            if ($node->content === 'if' || $node->content === 'unless') {
+                $depth++;
+            } elseif ($node->content === 'endif') {
+                $depth--;
+                if ($depth === 0) {
+                    return $node;
+                }
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -144,6 +555,546 @@ class BladeToAlpineTransformer
             '@submit.prevent="$1"',
             $html
         );
+    }
+
+    /**
+     * Ensure both empty and populated states exist in HTML for @if/@else conditionals
+     */
+    protected function ensureBothConditionalStates(string $html): string
+    {
+        $ifDirectives = $this->bladeDocument->findDirectivesByName('if');
+
+        // Find all nested Livewire component boundaries to skip them
+        $nestedComponentRanges = $this->findNestedLivewireComponentRanges();
+
+        foreach ($ifDirectives->all() as $directive) {
+            // Skip if this directive is inside a nested Livewire component
+            if ($this->isInsideNestedComponent($directive, $nestedComponentRanges)) {
+                \Log::info('[Duo] Skipping @if inside nested Livewire component', [
+                    'position' => $directive->position->startOffset ?? 'unknown',
+                ]);
+                continue;
+            }
+
+            $condition = $directive->arguments->content ?? '';
+
+            // Try to detect if this condition checks a collection's emptiness
+            $collectionInfo = $this->detectCollectionCondition($condition);
+
+            if (! $collectionInfo) {
+                continue;
+            }
+
+            $collectionName = $collectionInfo['collection'];
+            $checksEmpty = $collectionInfo['checksEmpty'];
+
+            if (! isset($this->componentData[$collectionName])) {
+                continue;
+            }
+
+            if (! $directive->structure || ! $directive->structure->hasElseBranch()) {
+                continue;
+            }
+
+            \Log::info('[Duo] Found @if/@else with collection check', [
+                'collection' => $collectionName,
+                'checksEmpty' => $checksEmpty,
+                'condition' => $condition,
+            ]);
+
+            $html = $this->injectMissingConditionalBranch($html, $directive, $collectionName, $checksEmpty);
+        }
+
+        return $html;
+    }
+
+    /**
+     * Find position ranges of nested Livewire components in the Blade source
+     */
+    protected function findNestedLivewireComponentRanges(): array
+    {
+        $ranges = [];
+        $bladeContent = $this->bladeDocument->toString();
+
+        \Log::info('[Duo] Searching for nested Livewire components', [
+            'bladeLength' => strlen($bladeContent),
+        ]);
+
+        // Pattern to match <livewire:component-name /> or @livewire('component-name')
+        // We look for opening and closing tags/directives
+
+        // Match @livewire('component')
+        if (preg_match_all('/@livewire\s*\([\'"]([^\'"]+)[\'"]\s*(?:,\s*\[.*?\])?\)/s', $bladeContent, $matches, PREG_OFFSET_CAPTURE)) {
+            foreach ($matches[0] as $match) {
+                $ranges[] = [
+                    'start' => $match[1],
+                    'end' => $match[1] + strlen($match[0]),
+                ];
+            }
+        }
+
+        // Match <livewire:component-name ... /> (self-closing)
+        if (preg_match_all('/<livewire:[^>]+\/>/s', $bladeContent, $matches, PREG_OFFSET_CAPTURE)) {
+            foreach ($matches[0] as $match) {
+                $ranges[] = [
+                    'start' => $match[1],
+                    'end' => $match[1] + strlen($match[0]),
+                ];
+            }
+        }
+
+        // Match <livewire:component-name ...>...</livewire:component-name> (with closing tag)
+        if (preg_match_all('/<livewire:([a-z\-]+)([^>]*)>(.*?)<\/livewire:\1>/s', $bladeContent, $matches, PREG_OFFSET_CAPTURE)) {
+            foreach ($matches[0] as $match) {
+                $ranges[] = [
+                    'start' => $match[1],
+                    'end' => $match[1] + strlen($match[0]),
+                ];
+            }
+        }
+
+        \Log::info('[Duo] Found nested Livewire component ranges', [
+            'count' => count($ranges),
+            'ranges' => $ranges,
+        ]);
+
+        return $ranges;
+    }
+
+    /**
+     * Check if a directive is inside a nested Livewire component
+     */
+    protected function isInsideNestedComponent($directive, array $ranges): bool
+    {
+        $directiveStart = $directive->position->startOffset ?? null;
+
+        if ($directiveStart === null) {
+            return false;
+        }
+
+        foreach ($ranges as $range) {
+            if ($directiveStart >= $range['start'] && $directiveStart <= $range['end']) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Find nested Livewire component boundaries in rendered HTML
+     * by looking for divs with wire:snapshot and wire:id attributes
+     */
+    protected function findNestedLivewireComponentRangesInHtml(string $html): array
+    {
+        $ranges = [];
+
+        // Find all Livewire component divs (they have wire:snapshot, wire:effects, and wire:id)
+        // Pattern: <div wire:snapshot="..." ... wire:id="...">
+        preg_match_all('/<div[^>]+wire:snapshot[^>]+wire:id="([^"]+)"[^>]*>/s', $html, $matches, PREG_OFFSET_CAPTURE);
+
+        \Log::info('[Duo] Searching for wire:snapshot divs in HTML', [
+            'totalMatches' => count($matches[0]),
+            'htmlLength' => strlen($html),
+            'htmlPreview' => substr($html, 0, 500),
+        ]);
+
+        if (count($matches[0]) <= 1) {
+            // Only one component (the root), no nested components
+            \Log::info('[Duo] Only one or zero wire:snapshot divs found, no nested components');
+
+            return [];
+        }
+
+        // Skip the first match (that's the root component), process the rest as nested
+        for ($i = 1; $i < count($matches[0]); $i++) {
+            $openingTag = $matches[0][$i][0];
+            $startPos = $matches[0][$i][1];
+            $wireId = $matches[1][$i][0];
+
+            // Find the matching closing </div> by counting div depth
+            $endPos = $this->findMatchingClosingDiv($html, $startPos);
+
+            if ($endPos !== null) {
+                $ranges[] = [
+                    'start' => $startPos,
+                    'end' => $endPos,
+                    'wireId' => $wireId,
+                ];
+            }
+        }
+
+        return $ranges;
+    }
+
+    /**
+     * Find the position of the matching closing </div> tag
+     * by counting div depth from a starting position
+     */
+    protected function findMatchingClosingDiv(string $html, int $startPos): ?int
+    {
+        $depth = 1;
+        $pos = $startPos;
+
+        // Move past the opening tag
+        $pos = strpos($html, '>', $pos);
+        if ($pos === false) {
+            return null;
+        }
+        $pos++;
+
+        // Find matching closing tag by counting depth
+        while ($depth > 0 && $pos < strlen($html)) {
+            // Find next opening or closing div tag
+            $nextOpen = strpos($html, '<div', $pos);
+            $nextClose = strpos($html, '</div>', $pos);
+
+            if ($nextClose === false) {
+                // No more closing tags
+                return null;
+            }
+
+            if ($nextOpen !== false && $nextOpen < $nextClose) {
+                // Found opening tag before closing tag
+                $depth++;
+                $pos = $nextOpen + 4;
+            } else {
+                // Found closing tag
+                $depth--;
+                if ($depth === 0) {
+                    // This is our matching closing tag
+                    return $nextClose + 6; // +6 for length of "</div>"
+                }
+                $pos = $nextClose + 6;
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Detect if a condition checks a collection's emptiness/fullness
+     * Returns ['collection' => 'todos', 'checksEmpty' => true/false] or null
+     */
+    protected function detectCollectionCondition(string $condition): ?array
+    {
+        $originalCondition = $condition;
+
+        // Remove outer parentheses more carefully - only remove matching outer parens, not all parens
+        $condition = trim($condition);
+        if (str_starts_with($condition, '(') && str_ends_with($condition, ')')) {
+            // Remove one layer of outer parentheses
+            $condition = substr($condition, 1, -1);
+            $condition = trim($condition);
+        }
+
+        \Log::info('[Duo] Pattern detection debug', [
+            'original' => $originalCondition,
+            'after_trim' => $condition,
+            'pattern1_test' => preg_match('/\$this->(\w+)->isEmpty\(\)/', $condition),
+        ]);
+
+        // Pattern 1: $this->collection->isEmpty()
+        if (preg_match('/\$this->(\w+)->isEmpty\(\)/', $condition, $matches)) {
+            \Log::info('[Duo] Matched Pattern 1 (isEmpty)', ['collection' => $matches[1]]);
+
+            return ['collection' => $matches[1], 'checksEmpty' => true];
+        }
+
+        // Pattern 2: !$this->collection->isEmpty()
+        if (preg_match('/!\s*\$this->(\w+)->isEmpty\(\)/', $condition, $matches)) {
+            return ['collection' => $matches[1], 'checksEmpty' => false];
+        }
+
+        // Pattern 3: empty($this->collection) or empty($collection)
+        if (preg_match('/empty\(\s*\$(?:this->)?(\w+)\s*\)/', $condition, $matches)) {
+            return ['collection' => $matches[1], 'checksEmpty' => true];
+        }
+
+        // Pattern 4: !empty($this->collection) or !empty($collection)
+        if (preg_match('/!\s*empty\(\s*\$(?:this->)?(\w+)\s*\)/', $condition, $matches)) {
+            return ['collection' => $matches[1], 'checksEmpty' => false];
+        }
+
+        // Pattern 5: $this->collection->count() === 0 (or == 0)
+        if (preg_match('/\$(?:this->)?(\w+)->count\(\)\s*(?:===|==)\s*0/', $condition, $matches)) {
+            return ['collection' => $matches[1], 'checksEmpty' => true];
+        }
+
+        // Pattern 6: $this->collection->count() > 0
+        if (preg_match('/\$(?:this->)?(\w+)->count\(\)\s*>\s*0/', $condition, $matches)) {
+            return ['collection' => $matches[1], 'checksEmpty' => false];
+        }
+
+        // Pattern 7: !$this->collection->count()
+        if (preg_match('/!\s*\$(?:this->)?(\w+)->count\(\)/', $condition, $matches)) {
+            return ['collection' => $matches[1], 'checksEmpty' => true];
+        }
+
+        // Pattern 8: $this->collection->count() (truthy check - has items)
+        if (preg_match('/^\$(?:this->)?(\w+)->count\(\)$/', $condition, $matches)) {
+            return ['collection' => $matches[1], 'checksEmpty' => false];
+        }
+
+        // Pattern 9: count($this->collection) === 0 (or == 0)
+        if (preg_match('/count\(\s*\$(?:this->)?(\w+)\s*\)\s*(?:===|==)\s*0/', $condition, $matches)) {
+            return ['collection' => $matches[1], 'checksEmpty' => true];
+        }
+
+        // Pattern 10: count($this->collection) > 0
+        if (preg_match('/count\(\s*\$(?:this->)?(\w+)\s*\)\s*>\s*0/', $condition, $matches)) {
+            return ['collection' => $matches[1], 'checksEmpty' => false];
+        }
+
+        // Pattern 11: $this->collection->isNotEmpty()
+        if (preg_match('/\$(?:this->)?(\w+)->isNotEmpty\(\)/', $condition, $matches)) {
+            return ['collection' => $matches[1], 'checksEmpty' => false];
+        }
+
+        // Check if any of our known collections are mentioned
+        // This is a fallback - try to detect collection mentions
+        foreach (array_keys($this->componentData) as $key) {
+            if (str_contains($condition, '$this->'.$key) || str_contains($condition, '$'.$key)) {
+                // Collection is mentioned, try to infer if checking empty or not
+                // If condition contains !, empty, === 0, == 0, it's likely checking empty
+                if (preg_match('/(!|empty|===\s*0|==\s*0)/', $condition)) {
+                    \Log::info('[Duo] Using fallback pattern - detected checksEmpty=true', [
+                        'collection' => $key,
+                        'condition' => $condition,
+                    ]);
+
+                    return ['collection' => $key, 'checksEmpty' => true];
+                }
+                // Otherwise assume checking for has items
+                \Log::info('[Duo] Using fallback pattern - detected checksEmpty=false', [
+                    'collection' => $key,
+                    'condition' => $condition,
+                ]);
+
+                return ['collection' => $key, 'checksEmpty' => false];
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * Inject the missing conditional branch into HTML
+     */
+    protected function injectMissingConditionalBranch(string $html, $directive, string $collectionName, bool $conditionChecksEmpty): string
+    {
+        $structure = $directive->structure;
+        $primaryBranch = $structure->getPrimaryBranch(); // @if branch
+        $elseBranches = $structure->getElseBranches();
+        $elseBranch = $elseBranches[0] ?? null;
+
+        if (! $elseBranch) {
+            return $html;
+        }
+
+        // Determine current state
+        $collection = $this->componentData[$collectionName];
+        $collectionIsEmpty = is_countable($collection) ? count($collection) === 0 : empty($collection);
+
+        \Log::info('[Duo] Processing conditional branch injection', [
+            'collection' => $collectionName,
+            'collectionIsEmpty' => $collectionIsEmpty,
+            'conditionChecksEmpty' => $conditionChecksEmpty,
+        ]);
+
+        // Determine which branch contains which state based on the condition
+        if ($conditionChecksEmpty) {
+            // @if(isEmpty) means: primary = empty state, else = has items
+            $emptyStateBranch = $primaryBranch;
+            $hasItemsBranch = $elseBranch;
+        } else {
+            // @if(isNotEmpty) means: primary = has items, else = empty state
+            $emptyStateBranch = $elseBranch;
+            $hasItemsBranch = $primaryBranch;
+        }
+
+        // DEBUG: Let's see what's in these branch objects
+        \Log::info('[Duo] Branch object inspection', [
+            'emptyStateBranch_class' => get_class($emptyStateBranch),
+            'emptyStateBranch_properties' => get_object_vars($emptyStateBranch),
+            'hasItemsBranch_class' => get_class($hasItemsBranch),
+            'hasItemsBranch_properties' => get_object_vars($hasItemsBranch),
+        ]);
+
+        // Find ALL BLOCK/ENDBLOCK pairs in the rendered HTML
+        preg_match_all('/<!--\[if BLOCK\]><!\[endif\]-->(.*?)<!--\[if ENDBLOCK\]><!\[endif\]-->/s', $html, $allMatches, PREG_OFFSET_CAPTURE | PREG_SET_ORDER);
+
+        \Log::info('[Duo] BLOCK marker analysis', [
+            'totalBlocks' => count($allMatches),
+            'htmlLength' => strlen($html),
+        ]);
+
+        // Find the LAST BLOCK (nested components render first, so their BLOCKs appear earlier)
+        // The main component's BLOCK will be the last one in the HTML
+        $match = null;
+        if (count($allMatches) > 0) {
+            // Take the last BLOCK marker
+            $match = end($allMatches);
+
+            \Log::info('[Duo] Selected LAST BLOCK marker (main component)', [
+                'totalBlocks' => count($allMatches),
+                'selectedPosition' => $match[0][1],
+            ]);
+        }
+
+        if (! $match) {
+            \Log::warning('[Duo] No BLOCK/ENDBLOCK pair found outside nested components');
+
+            return $html;
+        }
+
+        $renderedBlockHtml = $match[1][0];
+        $blockStart = $match[0][1];
+        $blockLength = strlen($match[0][0]);
+
+        \Log::info('[Duo] Found BLOCK/ENDBLOCK pair outside nested components', [
+            'blockStart' => $blockStart,
+            'blockLength' => $blockLength,
+            'renderedHtmlPreview' => substr($renderedBlockHtml, 0, 200),
+        ]);
+
+        // Determine which branch was rendered and which needs to be injected
+        if ($collectionIsEmpty) {
+            // Collection is empty, so the empty state branch was rendered
+            $emptyStateHtml = $renderedBlockHtml;
+
+            // For the has-items branch, we need to render it with sample data
+            $sampleData = $this->createSampleDataForCollection($collectionName);
+            $hasItemsHtml = $this->renderBranchContent($hasItemsBranch->content, $collectionName, array_merge($this->componentData, [$collectionName => $sampleData]));
+        } else {
+            // Collection has items, so the has-items branch was rendered
+            $hasItemsHtml = $renderedBlockHtml;
+
+            // For the empty branch, render with empty collection
+            $emptyStateHtml = $this->renderBranchContent($emptyStateBranch->content, $collectionName, array_merge($this->componentData, [$collectionName => []]));
+        }
+
+        // Build replacement with both states
+        $replacement = <<<HTML
+        <div x-show="{$collectionName}.length === 0">
+            {$emptyStateHtml}
+        </div>
+        <div x-show="{$collectionName}.length > 0">
+            {$hasItemsHtml}
+        </div>
+        HTML;
+
+        \Log::info('[Duo] Built replacement HTML', [
+            'emptyStateLength' => strlen($emptyStateHtml),
+            'hasItemsLength' => strlen($hasItemsHtml),
+            'replacementLength' => strlen($replacement),
+            'replacementPreview' => substr($replacement, 0, 300),
+        ]);
+
+        $result = substr_replace($html, $replacement, $blockStart, $blockLength);
+
+        \Log::info('[Duo] Replacement complete', [
+            'originalLength' => strlen($html),
+            'resultLength' => strlen($result),
+            'changed' => strlen($html) !== strlen($result),
+        ]);
+
+        return $result;
+    }
+
+    /**
+     * Create sample data for a collection to enable rendering of @foreach loops
+     */
+    protected function createSampleDataForCollection(string $collectionName): array
+    {
+        // Check if we have any existing items in the collection to use as a template
+        $collection = $this->componentData[$collectionName] ?? null;
+
+        if ($collection && is_countable($collection) && count($collection) > 0) {
+            // Use existing items
+            return is_object($collection) && method_exists($collection, 'toArray') ? $collection->toArray() : (array) $collection;
+        }
+
+        // Try to find the model from our component data
+        $modelName = ucfirst(rtrim($collectionName, 's'));
+
+        // Create a minimal sample record with common fields
+        $sampleRecord = [
+            'id' => 1,
+            'title' => 'Sample',
+            'name' => 'Sample',
+            'description' => 'Sample',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ];
+
+        // Wrap in a collection-like structure
+        return [$sampleRecord];
+    }
+
+    /**
+     * Render Blade branch content to HTML
+     */
+    protected function renderBranchContent(string $bladeContent, string $collectionName, array $data): string
+    {
+        // Remove outer whitespace
+        $bladeContent = trim($bladeContent);
+
+        \Log::info('[Duo] Rendering branch content', [
+            'collectionName' => $collectionName,
+            'bladeContentLength' => strlen($bladeContent),
+            'bladePreview' => substr($bladeContent, 0, 200),
+            'dataKeys' => array_keys($data),
+        ]);
+
+        // Replace ALL $this->propertyName with $propertyName so it works in eval scope
+        // This allows @foreach($this->todos as $todo) to work with our $data array
+        // It also handles any other $this-> references like $this->user, etc.
+        $bladeContent = preg_replace_callback('/\$this->(\w+)\b/', function ($matches) use ($data) {
+            $propertyName = $matches[1];
+            // Only replace if we have this property in our data
+            if (array_key_exists($propertyName, $data)) {
+                return '$'.$propertyName;
+            }
+
+            // Keep the original if we don't have it (will likely error, but that's expected)
+            return $matches[0];
+        }, $bladeContent);
+
+        \Log::info('[Duo] Transformed Blade content', [
+            'transformedPreview' => substr($bladeContent, 0, 200),
+        ]);
+
+        // Use Blade to compile and render this content
+        try {
+            $compiled = \Blade::compileString($bladeContent);
+
+            // Create isolated scope with data
+            $__data = array_merge(['component' => $this->component], $data);
+
+            // Extract variables for the view scope
+            extract($__data, EXTR_SKIP);
+
+            // Evaluate the compiled PHP
+            ob_start();
+            eval('?>'.$compiled);
+
+            $result = ob_get_clean();
+
+            \Log::info('[Duo] Branch rendered successfully', [
+                'resultLength' => strlen($result),
+                'resultPreview' => substr($result, 0, 200),
+            ]);
+
+            return $result;
+        } catch (\Exception $e) {
+            \Log::error('[Duo] Failed to render branch content', [
+                'error' => $e->getMessage(),
+                'content' => substr($bladeContent, 0, 200),
+            ]);
+
+            return '';
+        }
     }
 
     /**
@@ -791,12 +1742,36 @@ class BladeToAlpineTransformer
         $modelName = $this->extractModelFromMethodName($methodName);
         $storeName = $this->getStoreName($modelName);
 
-        // Detect form fields (scalar values, not collections)
+        // Detect form fields - include only scalar values that can be saved to IndexedDB
+        // This prevents computed properties, collections, and complex objects from being included
         $formFields = [];
         foreach ($this->componentData as $key => $value) {
-            if (! str_starts_with($key, '_') && ! $this->isCollection($value) && ! is_array($value)) {
-                $formFields[] = $key;
+            // Skip internal fields
+            if (str_starts_with($key, '_')) {
+                continue;
             }
+
+            // Skip collections (even if empty)
+            if (is_object($value) && method_exists($value, 'toArray')) {
+                continue;
+            }
+
+            // Skip arrays and traversable objects
+            if (is_array($value) || $value instanceof \Traversable) {
+                continue;
+            }
+
+            // Skip Eloquent models
+            if (is_object($value) && method_exists($value, 'getKey')) {
+                continue;
+            }
+
+            // Skip other complex objects (keep only objects with __toString for things like Carbon dates)
+            if (is_object($value) && ! method_exists($value, '__toString')) {
+                continue;
+            }
+
+            $formFields[] = $key;
         }
 
         // Find this method in componentMethods to get validation rules
@@ -1041,7 +2016,8 @@ class BladeToAlpineTransformer
      */
     protected function isCollection($value): bool
     {
-        return is_object($value) && method_exists($value, 'toArray') && ! empty($value->toArray());
+        // Check if it's a Collection (even if empty)
+        return is_object($value) && method_exists($value, 'toArray');
     }
 
     /**
@@ -1301,12 +2277,35 @@ class BladeToAlpineTransformer
                 $modelName = ucfirst(rtrim($key, 's'));
                 $storeName = $this->getStoreName($modelName);
 
+                // Generate sorting logic if ORDER BY exists
+                $sortCode = '';
+                if ($this->orderBy) {
+                    $column = $this->orderBy['column'];
+                    $direction = $this->orderBy['direction'];
+                    $ascReturn = $direction === 'asc' ? '-1' : '1';
+                    $descReturn = $direction === 'asc' ? '1' : '-1';
+                    $sortCode = <<<JS
+
+                    // Apply ORDER BY: {$column} {$direction}
+                    records.sort((a, b) => {{
+                        const aVal = a['{$column}'];
+                        const bVal = b['{$column}'];
+                        if (aVal === null && bVal === null) return 0;
+                        if (aVal === null) return 1;
+                        if (bVal === null) return -1;
+                        if (aVal < bVal) return {$ascReturn};
+                        if (aVal > bVal) return {$descReturn};
+                        return 0;
+                    }});
+JS;
+                }
+
                 $syncOperations[] = "
             // Sync {$key} from IndexedDB
             try {
                 const {$key}Store = db.getStore('{$storeName}');
                 if ({$key}Store) {
-                    const records = await {$key}Store.toArray();
+                    const records = await {$key}Store.toArray();{$sortCode}
                     console.log('[Duo] Loaded', records.length, '{$key} from IndexedDB');
 
                     // Force Alpine reactivity by creating new array reference
@@ -1416,15 +2415,42 @@ class BladeToAlpineTransformer
                 $modelName = ucfirst(rtrim($key, 's'));
                 $storeName = $this->getStoreName($modelName);
 
+                // Generate sorting logic if ORDER BY exists
+                $sortCode = '';
+                if ($this->orderBy) {
+                    $column = $this->orderBy['column'];
+                    $direction = $this->orderBy['direction'];
+                    $ascReturn = $direction === 'asc' ? '-1' : '1';
+                    $descReturn = $direction === 'asc' ? '1' : '-1';
+                    $sortCode = <<<JS
+
+                                // Apply ORDER BY: {$column} {$direction}
+                                items.sort((a, b) => {{
+                                    const aVal = a['{$column}'];
+                                    const bVal = b['{$column}'];
+                                    if (aVal === null && bVal === null) return 0;
+                                    if (aVal === null) return 1;
+                                    if (bVal === null) return -1;
+                                    if (aVal < bVal) return {$ascReturn};
+                                    if (aVal > bVal) return {$descReturn};
+                                    return 0;
+                                }});
+JS;
+                }
+
                 $subscriptions[] = "
             // Set up liveQuery for {$key} (multi-tab sync)
             try {
                 const {$key}Store = db.getStore('{$storeName}');
                 if ({$key}Store) {
-                    const subscription = window.duo.liveQuery(() => {$key}Store.toArray())
+                    const subscription = window.duo.liveQuery(() =>
+                        {$key}Store.toArray().then(items =>
+                            items.filter(item => item._duo_operation !== 'delete')
+                        )
+                    )
                         .subscribe(
                             items => {
-                                console.log('[Duo] liveQuery updated {$key}:', items.length, 'items');
+                                console.log('[Duo] liveQuery updated {$key}:', items.length, 'items');{$sortCode}
                                 this.{$key} = items;
                             },
                             error => console.error('[Duo] liveQuery error for {$key}:', error)

@@ -150,13 +150,19 @@ export class SyncQueue {
           this.removeFromQueue(operation.id);
           this.config.onSyncSuccess?.(operation);
 
-          // Remove pending flag from IndexedDB
+          // Remove pending flag from IndexedDB or delete the record
           const store = this.db.getStore(operation.storeName);
-          if (store && operation.operation !== 'delete') {
-            await store.update(operation.data, {
-              _duo_pending_sync: 0,
-              _duo_synced_at: Date.now(),
-            });
+          if (store) {
+            if (operation.operation === 'delete') {
+              // Actually delete the record after successful sync
+              await store.delete(operation.data.id);
+            } else {
+              // For create/update, just remove the pending flag
+              await store.update(operation.data, {
+                _duo_pending_sync: false,
+                _duo_synced_at: Date.now(),
+              });
+            }
           }
         } catch (error) {
           this.handleSyncError(operation, error as Error);

@@ -32,7 +32,7 @@ export interface DuoRecord {
   [key: string]: any;
   _duo_synced_at?: number;
   _duo_version?: number;
-  _duo_pending_sync?: boolean;
+  _duo_pending_sync?: boolean | number;
   _duo_operation?: 'create' | 'update' | 'delete';
 }
 
@@ -57,9 +57,10 @@ export class DuoDatabase extends Dexie {
 
     for (const [storeName, storeConfig] of Object.entries(this.config.stores)) {
       // Create Dexie schema string with primary key and indexes
+      const storeIndexes = storeConfig.indexes || [];
       const indexes = [
         `++${storeConfig.primaryKey}`,
-        ...storeConfig.indexes.filter((idx) => idx !== storeConfig.primaryKey),
+        ...storeIndexes.filter((idx) => idx !== storeConfig.primaryKey),
         '_duo_synced_at',
         '_duo_pending_sync',
       ].join(',');
