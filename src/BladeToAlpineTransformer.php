@@ -154,7 +154,7 @@ class BladeToAlpineTransformer
 
     /**
      * Transform the rendered HTML
-     * ONLY adds x-data to the root element - all other transformations happen at Blade source level
+     * Adds x-data to root element and adds sorting to x-for loops based on actual data
      */
     public function transformHtml(): string
     {
@@ -162,7 +162,18 @@ class BladeToAlpineTransformer
 
         $html = $this->renderedHtml;
 
-        // Add Alpine x-data to root element (the ONLY thing we do at HTML level)
+        // Find nested Livewire component boundaries so we don't transform them
+        $nestedComponentRanges = $this->findNestedLivewireComponentRangesInHtml($html);
+
+        \Log::info('[Duo] Found nested Livewire components in HTML', [
+            'count' => count($nestedComponentRanges),
+        ]);
+
+        // Add sorting to x-for loops based on actual collection data
+        // (but skip nested components)
+        $html = $this->addSortingToXForLoops($html, $nestedComponentRanges);
+
+        // Add Alpine x-data to root element
         $html = $this->addAlpineXData($html);
 
         \Log::info('[Duo] HTML transformation complete');
@@ -2277,11 +2288,11 @@ BLADE;
                 $modelName = ucfirst(rtrim($key, 's'));
                 $storeName = $this->getStoreName($modelName);
 
-                // Generate sorting logic if ORDER BY exists
+                // Generate sorting logic if ORDER BY exists for this collection
                 $sortCode = '';
-                if ($this->orderBy) {
-                    $column = $this->orderBy['column'];
-                    $direction = $this->orderBy['direction'];
+                if ($this->orderBy && isset($this->orderBy[$key])) {
+                    $column = $this->orderBy[$key]['column'];
+                    $direction = $this->orderBy[$key]['direction'];
                     $ascReturn = $direction === 'asc' ? '-1' : '1';
                     $descReturn = $direction === 'asc' ? '1' : '-1';
                     $sortCode = <<<JS
@@ -2415,11 +2426,11 @@ JS;
                 $modelName = ucfirst(rtrim($key, 's'));
                 $storeName = $this->getStoreName($modelName);
 
-                // Generate sorting logic if ORDER BY exists
+                // Generate sorting logic if ORDER BY exists for this collection
                 $sortCode = '';
-                if ($this->orderBy) {
-                    $column = $this->orderBy['column'];
-                    $direction = $this->orderBy['direction'];
+                if ($this->orderBy && isset($this->orderBy[$key])) {
+                    $column = $this->orderBy[$key]['column'];
+                    $direction = $this->orderBy[$key]['direction'];
                     $ascReturn = $direction === 'asc' ? '-1' : '1';
                     $descReturn = $direction === 'asc' ? '1' : '-1';
                     $sortCode = <<<JS
@@ -2573,4 +2584,96 @@ JS;
             this._intervals.push(refreshInterval);
         }";
     }
+
+    /**
+     * Add sorting to x-for loops based on ORDER BY from SQL queries
+     */
+    protected function addSortingToXForLoops(string $html, array $nestedComponentRanges = []): string
+    {
+        // If no ORDER BY information available, return HTML unchanged
+        if (!$this->orderBy) {
+            \Log::info('[Duo] No ORDER BY information available');
+            return $html;
+        }
+
+        \Log::info('[Duo] Adding sorting to x-for loops', ['orderBy' => $this->orderBy]);
+
+        // First, find all x-for loops with their positions
+        preg_match_all('/x-for="(\w+)\s+in\s+(\w+)"/', $html, $allMatches, PREG_OFFSET_CAPTURE);
+
+        // Build a map of positions to replacements
+        $replacements = [];
+
+        for ($i = 0; $i < count($allMatches[0]); $i++) {
+            $fullMatch = $allMatches[0][$i][0];
+            $position = $allMatches[0][$i][1];
+            $itemVar = $allMatches[1][$i][0];
+            $collectionName = $allMatches[2][$i][0];
+
+            \Log::info('[Duo] Found x-for loop', [
+                'itemVar' => $itemVar,
+                'collectionName' => $collectionName,
+                'position' => $position,
+            ]);
+
+            // Check if this x-for is inside a nested Livewire component
+            $insideNested = false;
+            foreach ($nestedComponentRanges as $range) {
+                if ($position >= $range['start'] && $position <= $range['end']) {
+                    \Log::info('[Duo] Skipping x-for inside nested Livewire component', [
+                        'wireId' => $range['wireId'],
+                    ]);
+                    $insideNested = true;
+                    break;
+                }
+            }
+
+            if ($insideNested) {
+                continue; // Skip this one
+            }
+
+            // Check if we have ORDER BY info for this collection
+            if (!isset($this->orderBy[$collectionName])) {
+                \Log::info('[Duo] No ORDER BY for this collection');
+                continue; // Skip this one
+            }
+
+            $sortInfo = $this->orderBy[$collectionName];
+            \Log::info('[Duo] Applying ORDER BY', $sortInfo);
+
+            // Build JavaScript sort expression
+            $column = $sortInfo['column'];
+            $direction = $sortInfo['direction'];
+
+            if ($direction === 'desc') {
+                $sortedExpression = "[...{$collectionName}].sort((a, b) => {
+                        const aVal = a.{$column};
+                        const bVal = b.{$column};
+                        if (aVal === bVal) return 0;
+                        return bVal > aVal ? 1 : -1;
+                    })";
+            } else {
+                $sortedExpression = "[...{$collectionName}].sort((a, b) => {
+                        const aVal = a.{$column};
+                        const bVal = b.{$column};
+                        if (aVal === bVal) return 0;
+                        return aVal > bVal ? 1 : -1;
+                    })";
+            }
+
+            $replacements[$position] = [
+                'old' => $fullMatch,
+                'new' => "x-for=\"{$itemVar} in {$sortedExpression}\"",
+            ];
+        }
+
+        // Apply replacements in reverse order to maintain positions
+        krsort($replacements);
+        foreach ($replacements as $position => $replacement) {
+            $html = substr_replace($html, $replacement['new'], $position, strlen($replacement['old']));
+        }
+
+        return $html;
+    }
+
 }

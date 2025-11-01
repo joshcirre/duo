@@ -174,6 +174,9 @@ final class DuoServiceProvider extends ServiceProvider
             // This will be used by @duoMeta to conditionally enable offline caching
             app()->instance('duo.has_enabled_component', true);
 
+            // Clear and start tracking ALL queries from this point forward
+            \DB::flushQueryLog();
+
             // Get Blade source file path
             $bladePath = $view->getPath();
             if (! $bladePath || ! file_exists($bladePath)) {
@@ -188,12 +191,27 @@ final class DuoServiceProvider extends ServiceProvider
                 'length' => strlen($bladeSource),
             ]);
 
-            // Get view data and computed properties
+            // Get view data (from render() method - queries may execute here)
             $viewData = method_exists($view, 'getData') ? $view->getData() : [];
-            $computedProperties = $this->getComputedProperties($component);
+
+            // Get computed properties (queries tracked per-property)
+            $computedResult = $this->getComputedProperties($component);
+            $computedProperties = $computedResult['properties'];
+            $computedOrderBy = $computedResult['orderBy'];
+
+            // Merge all data
             $allData = array_merge($properties, $viewData, $computedProperties);
 
-            \Log::info('[Duo] Combined data for transformation', ['keys' => array_keys($allData)]);
+            // Get ALL queries that have been logged
+            $allQueries = \DB::getQueryLog();
+
+            // Match queries to collections in $allData (for data not from computed properties)
+            $orderByInfo = $this->matchQueriesToCollections($allData, $allQueries, $computedOrderBy);
+
+            \Log::info('[Duo] Combined data for transformation', [
+                'keys' => array_keys($allData),
+                'orderBy' => $orderByInfo,
+            ]);
 
             // Transform the Blade source (add x-show wrappers for @if/@else)
             $transformer = new \JoshCirre\Duo\BladeToAlpineTransformer(
@@ -212,10 +230,12 @@ final class DuoServiceProvider extends ServiceProvider
             ]);
 
             // Return a finisher callback that renders the transformed Blade and does HTML transformations
-            return function ($html, $replaceHtml = null, $viewContext = null) use ($transformedBlade, $allData, $component) {
+            return function ($html, $replaceHtml = null, $viewContext = null) use ($transformedBlade, $allData, $component, $orderByInfo) {
                 \Log::info('[Duo] Finisher callback - rendering transformed Blade');
 
                 try {
+                    \Log::info('[Duo] Using ORDER BY info from computed properties', ['orderBy' => $orderByInfo]);
+
                     // Render the transformed Blade with the component data
                     $renderedHtml = \Blade::render($transformedBlade, $allData);
 
@@ -232,7 +252,7 @@ final class DuoServiceProvider extends ServiceProvider
                         $allData,
                         $componentMethods,
                         $component,
-                        null
+                        $orderByInfo
                     );
 
                     return $transformer->transformHtml();
@@ -437,10 +457,12 @@ final class DuoServiceProvider extends ServiceProvider
 
     /**
      * Get computed properties from a Livewire component.
+     * Returns array with 'properties' and 'orderBy' keys
      */
     protected function getComputedProperties($component): array
     {
         $computed = [];
+        $orderByInfo = [];
         $reflection = new \ReflectionClass($component);
 
         foreach ($reflection->getMethods(\ReflectionMethod::IS_PUBLIC) as $method) {
@@ -471,7 +493,21 @@ final class DuoServiceProvider extends ServiceProvider
 
                     // Try to access it - Livewire's __get will call the method
                     if (property_exists($component, $propertyName) || method_exists($component, '__get')) {
+                        // Track query log position before executing this property
+                        $queriesBeforeCount = count(\DB::getQueryLog());
+
                         $value = $component->$propertyName;
+
+                        // Get only the NEW queries that were just executed for THIS property
+                        $allQueries = \DB::getQueryLog();
+                        $newQueries = array_slice($allQueries, $queriesBeforeCount);
+
+                        // Extract ORDER BY from queries for this specific property
+                        $orderBy = $this->extractOrderByFromQueriesForProperty($newQueries);
+                        if ($orderBy) {
+                            $orderByInfo[$propertyName] = $orderBy;
+                            \Log::info("[Duo] Extracted ORDER BY for property: $propertyName", $orderBy);
+                        }
 
                         // Handle Eloquent relationships and collections
                         if ($value instanceof \Illuminate\Database\Eloquent\Relations\Relation) {
@@ -490,7 +526,10 @@ final class DuoServiceProvider extends ServiceProvider
             }
         }
 
-        return $computed;
+        return [
+            'properties' => $computed,
+            'orderBy' => $orderByInfo,
+        ];
     }
 
     /**
@@ -586,68 +625,76 @@ final class DuoServiceProvider extends ServiceProvider
     }
 
     /**
-     * Extract ORDER BY from computed property methods by analyzing their queries
+     * Match queries to collections in $allData to extract ORDER BY info
+     * Starts with known ORDER BY from computed properties, then tries to match remaining collections
      */
-    protected function extractOrderByFromComputedProperties($component, array $allData): ?array
+    protected function matchQueriesToCollections(array $allData, array $allQueries, array $computedOrderBy): array
     {
-        $orderByInfo = [];
-        $reflection = new \ReflectionClass($component);
+        $orderByInfo = $computedOrderBy; // Start with what we know
 
-        foreach ($reflection->getMethods(\ReflectionMethod::IS_PUBLIC) as $method) {
-            // Skip if not from the current class
-            if ($method->getDeclaringClass()->getName() !== get_class($component)) {
+        foreach ($allData as $key => $value) {
+            // Skip if we already have ORDER BY for this key
+            if (isset($orderByInfo[$key])) {
                 continue;
             }
 
-            // Check if method has Computed attribute
-            $attributes = $method->getAttributes();
-            $hasComputedAttribute = false;
-
-            foreach ($attributes as $attribute) {
-                $attributeName = $attribute->getName();
-                if ($attributeName === 'Livewire\Attributes\Computed' ||
-                    str_ends_with($attributeName, '\Computed')) {
-                    $hasComputedAttribute = true;
-                    break;
-                }
+            // Check if this is a Collection of Eloquent models
+            if (!$value instanceof \Illuminate\Support\Collection && !is_array($value)) {
+                continue;
             }
 
-            if ($hasComputedAttribute) {
-                $methodName = $method->getName();
+            // Convert to collection if it's an array
+            $collection = $value instanceof \Illuminate\Support\Collection ? $value : collect($value);
 
-                // Enable query logging
-                \DB::enableQueryLog();
-                \DB::flushQueryLog();
+            // Skip empty collections
+            if ($collection->isEmpty()) {
+                continue;
+            }
 
-                try {
-                    // Execute the method to capture queries
-                    $component->$methodName;
+            // Get the first item to determine the model class
+            $firstItem = $collection->first();
+            if (!$firstItem instanceof \Illuminate\Database\Eloquent\Model) {
+                continue;
+            }
 
-                    // Get the queries
-                    $queries = \DB::getQueryLog();
+            // Get the table name from the model
+            $tableName = $firstItem->getTable();
+            $collectionCount = $collection->count();
 
-                    // Extract orderBy from queries
-                    $orderBy = $this->extractOrderBy($queries);
+            \Log::info("[Duo] Trying to match collection '$key' to a query", [
+                'table' => $tableName,
+                'count' => $collectionCount,
+            ]);
 
-                    if ($orderBy) {
-                        // Map this orderBy to the property name (collection name)
-                        $orderByInfo[$methodName] = $orderBy;
-                    }
-                } catch (\Exception $e) {
-                    \Log::warning("[Duo] Failed to extract orderBy for $methodName: ".$e->getMessage());
+            // Try to find a matching query in reverse order (most recent first)
+            foreach (array_reverse($allQueries) as $query) {
+                $sql = $query['query'];
+
+                // Check if this query is for the same table
+                if (!preg_match('/from\s+[`"]?' . preg_quote($tableName, '/') . '[`"]?/i', $sql)) {
+                    continue;
                 }
 
-                \DB::flushQueryLog();
+                // Extract ORDER BY if present
+                if (preg_match('/order\s+by\s+[`"]?(\w+)[`"]?\s+(asc|desc)/i', $sql, $matches)) {
+                    $orderByInfo[$key] = [
+                        'column' => $matches[1],
+                        'direction' => strtolower($matches[2]),
+                    ];
+
+                    \Log::info("[Duo] Matched collection '$key' to query with ORDER BY", $orderByInfo[$key]);
+                    break; // Found a match, move to next collection
+                }
             }
         }
 
-        return $orderByInfo ?: null;
+        return $orderByInfo;
     }
 
     /**
-     * Extract ORDER BY clause from SQL query.
+     * Extract ORDER BY from queries for a single computed property
      */
-    protected function extractOrderBy(array $queries): ?array
+    protected function extractOrderByFromQueriesForProperty(array $queries): ?array
     {
         foreach ($queries as $query) {
             $sql = $query['query'];
