@@ -1753,6 +1753,9 @@ BLADE;
         $modelName = $this->extractModelFromMethodName($methodName);
         $storeName = $this->getStoreName($modelName);
 
+        // Detect which timestamp fields the model uses by checking existing records
+        $timestampFields = $this->detectModelTimestampFields($modelName);
+
         // Detect form fields - include only scalar values that can be saved to IndexedDB
         // This prevents computed properties, collections, and complex objects from being included
         $formFields = [];
@@ -1849,9 +1852,11 @@ BLADE;
 
             try {
                 // Add record to IndexedDB with sync flag
+                const now = new Date().toISOString();
                 const record = {
                     ...formData,
                     id: Date.now(), // Temporary ID
+                    {$timestampFields}
                     _duo_pending_sync: true,
                     _duo_operation: 'create'
                 };
@@ -1972,9 +1977,22 @@ BLADE;
             try {
                 const recordId = typeof {$recordParam} === 'object' ? {$recordParam}.id : {$recordParam};
 
-                // Delete record from IndexedDB
-                await store.delete(recordId);
-                console.log('[Duo] Deleted record offline:', recordId);
+                // Get the full record first
+                const existingRecord = await store.get(recordId);
+                if (!existingRecord) {
+                    console.warn('[Duo] Record not found for deletion:', recordId);
+                    return;
+                }
+
+                // Mark record as deleted (soft delete) instead of actually deleting
+                const deletedRecord = {
+                    ...existingRecord,
+                    _duo_pending_sync: true,
+                    _duo_operation: 'delete'
+                };
+
+                await store.put(deletedRecord);
+                console.log('[Duo] Marked record as deleted (pending sync):', recordId);
 
                 // Queue for sync
                 const syncQueue = window.duo.getSyncQueue();
@@ -1982,7 +2000,7 @@ BLADE;
                     await syncQueue.enqueue({
                         storeName: '{$storeName}',
                         operation: 'delete',
-                        data: { id: recordId, _duo_operation: 'delete' }
+                        data: deletedRecord
                     });
                 }
 
@@ -1991,6 +2009,36 @@ BLADE;
                 console.error('[Duo] Failed to delete record:', err);
             }
         }";
+    }
+
+    /**
+     * Detect which timestamp fields a model uses
+     */
+    protected function detectModelTimestampFields(string $modelName): string
+    {
+        $collectionName = strtolower($modelName).'s'; // e.g., "todos"
+
+        // Try to find the collection in componentData
+        $collection = $this->componentData[$collectionName] ?? null;
+
+        if (!$collection || !$this->isCollection($collection) || $collection->isEmpty()) {
+            // Default to standard Laravel timestamps
+            return "created_at: now,\n                    updated_at: now,";
+        }
+
+        // Check first model for timestamp fields
+        $firstModel = $collection->first();
+        $fields = [];
+
+        if (property_exists($firstModel, 'created_at') || isset($firstModel->created_at)) {
+            $fields[] = 'created_at: now';
+        }
+
+        if (property_exists($firstModel, 'updated_at') || isset($firstModel->updated_at)) {
+            $fields[] = 'updated_at: now';
+        }
+
+        return $fields ? implode(",\n                    ", $fields).',' : '';
     }
 
     /**
@@ -2549,6 +2597,9 @@ JS;
                 // Mark as ready
                 this.duoLoading = false;
                 this.duoReady = true;
+
+                // Dispatch event for nested components
+                document.dispatchEvent(new CustomEvent('duo-ready'));
 
                 if (debug) console.log('[Duo] Component initialized and ready');
             } catch (err) {
