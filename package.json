@@ -1,6 +1,6 @@
 {
   "name": "@joshcirre/vite-plugin-duo",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "Vite plugin for Duo - Local-first IndexedDB syncing for Laravel and Livewire",
   "type": "module",
   "main": "./dist/index.js",

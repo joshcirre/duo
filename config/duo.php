@@ -121,8 +121,8 @@ return [
     */
     'sync_status' => [
         // Delay (in milliseconds) before showing sync indicator
-        // Only show if syncing takes longer than this value
-        'show_delay' => env('DUO_SYNC_STATUS_DELAY', 100),
+        // Only show if syncing takes longer than this value (prevents flash for fast syncs)
+        'show_delay' => env('DUO_SYNC_STATUS_DELAY', 1000),
 
         // Show "All changes synced" message after successful sync
         'show_success' => env('DUO_SYNC_STATUS_SHOW_SUCCESS', false),

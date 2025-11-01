@@ -392,8 +392,55 @@ Display a visual indicator of the sync status:
 
 This component shows:
 - 🟠 **Offline**: "You're offline - Changes saved locally"
-- 🔵 **Syncing**: "Syncing X changes..."
-- 🟢 **Synced**: "All changes synced"
+- 🔵 **Syncing**: "Syncing X changes..." (only shows after delay if sync takes longer than expected)
+- 🟢 **Synced**: "All changes synced" (optional, disabled by default)
+
+**Configuration Options:**
+
+```blade
+{{-- Basic usage with position --}}
+<x-duo::sync-status position="top-right" />
+
+{{-- Customize when sync indicator appears --}}
+<x-duo::sync-status :show-delay="2000" />  {{-- Wait 2 seconds before showing syncing indicator --}}
+
+{{-- Show success indicator --}}
+<x-duo::sync-status :show-success="true" />  {{-- Show "All changes synced" badge --}}
+
+{{-- Display inline instead of fixed positioning --}}
+<x-duo::sync-status :inline="true" />
+
+{{-- All options combined --}}
+<x-duo::sync-status
+    position="bottom-right"
+    :show-delay="1500"
+    :show-success="true"
+    :inline="false"
+/>
+```
+
+**Available Props:**
+
+| Prop | Type | Default | Description |
+|------|------|---------|-------------|
+| `position` | string | `'top-right'` | Position of the indicator: `'top-right'`, `'top-left'`, `'bottom-right'`, `'bottom-left'` |
+| `inline` | bool | `false` | Display inline instead of fixed positioning |
+| `show-delay` | int | `1000` | Milliseconds to wait before showing syncing indicator (prevents flash for fast syncs) |
+| `show-success` | bool | `false` | Whether to show "All changes synced" success message |
+
+**Global Configuration:**
+
+You can set default values in your `config/duo.php`:
+
+```php
+'sync_status' => [
+    'show_delay' => env('DUO_SYNC_STATUS_DELAY', 1000),
+    'show_success' => env('DUO_SYNC_STATUS_SUCCESS', false),
+    'success_duration' => env('DUO_SYNC_STATUS_SUCCESS_DURATION', 2000),
+],
+```
+
+Component-level props override global config values.
 
 **Debug Panel (Local Development Only):**
 
@@ -513,6 +560,49 @@ return [
     'auto_discover' => env('DUO_AUTO_DISCOVER', true),
 ];
 ```
+
+### Publishing Components
+
+If you want to customize the Duo components (sync-status, debug panel), publish the views:
+
+```bash
+php artisan vendor:publish --tag=duo-views
+```
+
+This will copy the component views to `resources/views/vendor/duo/components/`. Published views take precedence over the package views, so you can customize:
+
+**Sync Status Component:**
+```bash
+resources/views/vendor/duo/components/sync-status.blade.php
+```
+
+**Debug Panel Component:**
+```bash
+resources/views/vendor/duo/components/debug.blade.php
+```
+
+After publishing, you can modify:
+- Badge colors and icons
+- Positioning and layout
+- Text content and messaging
+- Animation and transitions
+- Any inline styles
+
+**Example Customization:**
+
+```blade
+{{-- resources/views/vendor/duo/components/sync-status.blade.php --}}
+
+{{-- Change offline badge color from amber to red --}}
+<flux:badge color="red" icon="exclamation-triangle" size="lg">
+    <div style="display: flex; flex-direction: column; align-items: flex-start;">
+        <span style="font-weight: 600;">Connection Lost</span>
+        <span style="font-size: 0.75rem; opacity: 0.9;">Working offline</span>
+    </div>
+</flux:badge>
+```
+
+**Note:** The components use inline styles by default, so they work out-of-the-box without requiring Tailwind or custom CSS. If you publish and customize them, you can keep the inline styles or switch to your own CSS approach.
 
 ### Component-Level Configuration
 
