@@ -122,7 +122,7 @@ $successDuration = config('duo.sync_status.success_duration', 2000);
         }
     }"
     x-init="init()"
-    @if($style) style="{{ $style }}" @endif
+    style="{{ $style }} display: flex; flex-direction: column; gap: 0.5rem;"
 >
     <!-- Offline Badge -->
     <div
@@ -130,9 +130,9 @@ $successDuration = config('duo.sync_status.success_duration', 2000);
         x-transition
     >
         <flux:badge color="amber" icon="exclamation-triangle" size="lg">
-            <div class="flex flex-col items-start">
-                <span class="font-semibold">You're offline</span>
-                <span class="text-xs opacity-90">Changes saved locally</span>
+            <div style="display: flex; flex-direction: column; align-items: flex-start;">
+                <span style="font-weight: 600;">You're offline</span>
+                <span style="font-size: 0.75rem; opacity: 0.9;">Changes saved locally</span>
             </div>
         </flux:badge>
     </div>
@@ -143,9 +143,9 @@ $successDuration = config('duo.sync_status.success_duration', 2000);
         x-transition
     >
         <flux:badge color="blue" icon="arrow-path" icon-variant="micro" size="lg">
-            <div class="flex flex-col items-start">
-                <span class="font-semibold">Syncing changes...</span>
-                <span class="text-xs opacity-90" x-text="duoSyncStatus.pendingCount + ' operation' + (duoSyncStatus.pendingCount === 1 ? '' : 's') + ' pending'"></span>
+            <div style="display: flex; flex-direction: column; align-items: flex-start;">
+                <span style="font-weight: 600;">Syncing changes...</span>
+                <span style="font-size: 0.75rem; opacity: 0.9;" x-text="duoSyncStatus.pendingCount + ' operation' + (duoSyncStatus.pendingCount === 1 ? '' : 's') + ' pending'"></span>
             </div>
         </flux:badge>
     </div>
@@ -156,13 +156,13 @@ $successDuration = config('duo.sync_status.success_duration', 2000);
             x-show="duoSyncStatus.isOnline && duoSyncStatus.pendingCount === 0"
             x-transition
             @duo-synced.window="
-                $el.classList.remove('opacity-0');
-                setTimeout(() => $el.classList.add('opacity-0'), config.successDuration);
+                $el.style.opacity = '1';
+                setTimeout(() => $el.style.opacity = '0', config.successDuration);
             "
-            class="opacity-0 transition-opacity duration-500"
+            style="opacity: 0; transition: opacity 500ms;"
         >
             <flux:badge color="lime" icon="check-circle" size="lg">
-                <span class="font-semibold">All changes synced</span>
+                <span style="font-weight: 600;">All changes synced</span>
             </flux:badge>
         </div>
     </template>

@@ -48,7 +48,7 @@ final class GenerateManifestCommand extends Command
         );
 
         $this->info("Manifest generated at: {$outputPath}");
-        $this->info('Models registered: '.count($manifest));
+        $this->info('Models registered: '.count($manifest['stores'] ?? []));
 
         return self::SUCCESS;
     }
