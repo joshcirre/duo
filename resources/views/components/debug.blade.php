@@ -12,7 +12,9 @@ $positionStyles = [
 ];
 
 $style = $positionStyles[$position] ?? $positionStyles['bottom-right'];
-$flexDirection = str_contains($position, 'bottom') ? 'flex-col-reverse' : 'flex-col';
+$flexDirection = str_contains($position, 'bottom') ? 'column-reverse' : 'column';
+$alignItems = str_contains($position, 'right') ? 'flex-end' : 'flex-start';
+$marginPanel = str_contains($position, 'bottom') ? 'margin-bottom: 0.5rem;' : 'margin-top: 0.5rem;';
 
 // Get actual state from app container (set by middleware)
 $transformationsEnabled = app()->bound('duo.transformations.enabled')
@@ -22,6 +24,12 @@ $transformationsEnabled = app()->bound('duo.transformations.enabled')
 
 {{-- Development-only Duo debugging helper --}}
 @if(app()->environment('local'))
+<style>
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+</style>
 <div
     x-data="{
         open: false,
@@ -77,11 +85,10 @@ $transformationsEnabled = app()->bound('duo.transformations.enabled')
         }
     }"
     x-init="init()"
-    style="{{ $style }}"
-    class="flex {{ $flexDirection }}"
+    style="{{ $style }} display: flex; flex-direction: {{ $flexDirection }}; align-items: {{ $alignItems }};"
 >
     {{-- Toggle Button --}}
-    <div class="flex items-center gap-2 {{ str_contains($position, 'right') ? 'self-end' : 'self-start' }}">
+    <div style="display: flex; align-items: center; gap: 0.5rem;">
         @if($transformationsEnabled)
             <flux:badge color="green" size="sm">Duo ON</flux:badge>
         @else
@@ -102,52 +109,52 @@ $transformationsEnabled = app()->bound('duo.transformations.enabled')
         x-show="open"
         x-cloak
         @click.outside="open = false"
-        class="w-96 bg-white dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 rounded-lg shadow-xl overflow-hidden {{ str_contains($position, 'right') ? 'self-end' : 'self-start' }} {{ str_contains($position, 'bottom') ? 'mb-2' : 'mt-2' }}"
+        style="width: 24rem; background-color: white; border: 1px solid #e4e4e7; border-radius: 0.5rem; box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04); overflow: hidden; {{ $marginPanel }}"
     >
         {{-- Header --}}
-        <div class="flex items-center justify-between px-4 py-3 border-b border-zinc-200 dark:border-zinc-800">
+        <div style="display: flex; align-items: center; justify-content: space-between; padding: 0.75rem 1rem; border-bottom: 1px solid #e4e4e7;">
             <flux:heading size="lg">Duo Debug Panel</flux:heading>
             <flux:button @click="open = false" variant="ghost" size="xs" icon="x-mark" icon-variant="micro" square />
         </div>
 
         {{-- Content --}}
-        <div class="p-4 space-y-3 max-h-[500px] overflow-y-auto">
+        <div style="padding: 1rem; display: flex; flex-direction: column; gap: 0.75rem; max-height: 500px; overflow-y: auto;">
             <template x-if="!dbInfo">
-                <div class="flex items-center justify-center py-8">
-                    <flux:icon.arrow-path class="animate-spin size-5 text-zinc-400" />
+                <div style="display: flex; align-items: center; justify-content: center; padding: 2rem 0;">
+                    <flux:icon.arrow-path style="animation: spin 1s linear infinite; width: 1.25rem; height: 1.25rem; color: #a1a1aa;" />
                 </div>
             </template>
 
             <template x-if="dbInfo && dbInfo.error">
-                <flux:badge color="red" size="sm" class="w-full justify-start">
+                <flux:badge color="red" size="sm" style="width: 100%; justify-content: flex-start;">
                     <flux:icon.exclamation-triangle variant="micro" />
                     <span x-text="dbInfo.error"></span>
                 </flux:badge>
             </template>
 
             <template x-if="dbInfo && !dbInfo.error">
-                <div class="space-y-3">
+                <div style="display: flex; flex-direction: column; gap: 0.75rem;">
                     {{-- Database Name --}}
                     <div>
                         <flux:subheading>Database Name</flux:subheading>
-                        <flux:text class="font-mono text-xs break-all" x-text="dbInfo.name"></flux:text>
+                        <flux:text style="font-family: monospace; font-size: 0.75rem; word-break: break-all;" x-text="dbInfo.name"></flux:text>
                     </div>
 
                     {{-- Schema Version --}}
                     <div>
                         <flux:subheading>Schema Version</flux:subheading>
-                        <div class="space-y-1">
-                            <flux:text class="font-mono font-semibold" x-text="dbInfo.version"></flux:text>
-                            <flux:text class="text-xs text-zinc-500">Timestamp-based (like Laravel migrations)</flux:text>
+                        <div style="display: flex; flex-direction: column; gap: 0.25rem;">
+                            <flux:text style="font-family: monospace; font-weight: 600;" x-text="dbInfo.version"></flux:text>
+                            <flux:text style="font-size: 0.75rem; color: #71717a;">Timestamp-based (like Laravel migrations)</flux:text>
                         </div>
                     </div>
 
                     {{-- Stores --}}
                     <div>
                         <flux:subheading>Stores</flux:subheading>
-                        <div class="flex flex-wrap gap-1.5 mt-1">
+                        <div style="display: flex; flex-wrap: wrap; gap: 0.375rem; margin-top: 0.25rem;">
                             <template x-for="store in dbInfo.stores" :key="store">
-                                <flux:badge size="sm" color="zinc" class="font-mono text-xs" x-text="store"></flux:badge>
+                                <flux:badge size="sm" color="zinc" style="font-family: monospace; font-size: 0.75rem;" x-text="store"></flux:badge>
                             </template>
                         </div>
                     </div>
@@ -155,10 +162,10 @@ $transformationsEnabled = app()->bound('duo.transformations.enabled')
                     {{-- Record Counts --}}
                     <div>
                         <flux:subheading>Record Counts</flux:subheading>
-                        <div class="space-y-1.5 mt-1">
+                        <div style="display: flex; flex-direction: column; gap: 0.375rem; margin-top: 0.25rem;">
                             <template x-for="[store, count] in Object.entries(dbInfo.stats)" :key="store">
-                                <div class="flex items-center justify-between text-sm">
-                                    <flux:text class="text-xs">
+                                <div style="display: flex; align-items: center; justify-content: space-between; font-size: 0.875rem;">
+                                    <flux:text style="font-size: 0.75rem;">
                                         <span x-text="store.split('_').pop()"></span>
                                     </flux:text>
                                     <flux:badge size="sm" x-text="count + ' records'"></flux:badge>
@@ -171,12 +178,12 @@ $transformationsEnabled = app()->bound('duo.transformations.enabled')
         </div>
 
         {{-- Actions --}}
-        <div class="px-4 py-3 border-t border-zinc-200 dark:border-zinc-800 space-y-2">
+        <div style="padding: 0.75rem 1rem; border-top: 1px solid #e4e4e7; display: flex; flex-direction: column; gap: 0.5rem;">
             {{-- Duo Transformations Toggle --}}
-            <div class="flex items-center justify-between p-3 bg-zinc-50 dark:bg-zinc-950 rounded-lg border border-zinc-200 dark:border-zinc-800">
-                <div class="flex-1">
+            <div style="display: flex; align-items: center; justify-content: space-between; padding: 0.75rem; background-color: #fafafa; border-radius: 0.5rem; border: 1px solid #e4e4e7;">
+                <div style="flex: 1;">
                     <flux:subheading>Duo Transformations</flux:subheading>
-                    <flux:text class="text-xs text-zinc-500">
+                    <flux:text style="font-size: 0.75rem; color: #71717a;">
                         <span x-show="duoEnabled">Local-first mode enabled</span>
                         <span x-show="!duoEnabled">Standard Livewire mode</span>
                     </flux:text>
@@ -191,7 +198,7 @@ $transformationsEnabled = app()->bound('duo.transformations.enabled')
                 @click="getDbInfo()"
                 variant="ghost"
                 size="sm"
-                class="w-full"
+                style="width: 100%;"
                 icon="arrow-path"
             >
                 Refresh Info
@@ -201,7 +208,7 @@ $transformationsEnabled = app()->bound('duo.transformations.enabled')
                 @click="clearDatabase()"
                 variant="danger"
                 size="sm"
-                class="w-full"
+                style="width: 100%;"
                 icon="trash"
             >
                 Delete Database & Reload
@@ -209,8 +216,8 @@ $transformationsEnabled = app()->bound('duo.transformations.enabled')
         </div>
 
         {{-- Footer Tip --}}
-        <div class="px-4 py-2 bg-zinc-50 dark:bg-zinc-950 border-t border-zinc-200 dark:border-zinc-800">
-            <flux:text class="text-xs text-zinc-500">
+        <div style="padding: 0.5rem 1rem; background-color: #fafafa; border-top: 1px solid #e4e4e7;">
+            <flux:text style="font-size: 0.75rem; color: #71717a;">
                 <strong>Tip:</strong> Use the toggle to compare Duo vs. standard Livewire rendering.
             </flux:text>
         </div>
