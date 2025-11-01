@@ -145,6 +145,31 @@ npm install -D @joshcirre/vite-plugin-duo
 
 > **Note:** Dexie is automatically installed as a dependency.
 
+### Publishing Assets (Optional)
+
+Duo works out-of-the-box without publishing any files. However, you can publish various assets for customization:
+
+```bash
+# Publish configuration file
+php artisan vendor:publish --tag=duo-config
+
+# Publish Blade components (sync-status, debug panel)
+php artisan vendor:publish --tag=duo-views
+
+# Publish JavaScript assets (advanced users only)
+php artisan vendor:publish --tag=duo-assets
+
+# Publish everything
+php artisan vendor:publish --provider="JoshCirre\Duo\DuoServiceProvider"
+```
+
+**What gets published:**
+- `duo-config` → `config/duo.php` - Global configuration
+- `duo-views` → `resources/views/vendor/duo/components/` - Blade components for customization
+- `duo-assets` → `resources/js/vendor/duo/` - JavaScript source files (rarely needed)
+
+See [Publishing Components](#publishing-components) in the Configuration section for customization examples.
+
 ## Quick Start
 
 ### 1. Add the Syncable Trait to Your Models
@@ -454,8 +479,17 @@ This component (only visible in `local` environment) provides:
 - 📊 **Database Info**: Name, schema version, stores, and record counts
 - 🔄 **Refresh**: Update database information on demand
 - 🗑️ **Clear Database**: Delete IndexedDB and reload (useful for testing schema upgrades)
+- 🔄 **Duo Toggle**: Switch between Duo (local-first) and standard Livewire mode
 
 The debug panel automatically shows the current schema version (timestamp-based) and makes it easy to test schema migrations by clearing the database.
+
+**Available Props:**
+
+| Prop | Type | Default | Description |
+|------|------|---------|-------------|
+| `position` | string | `'bottom-right'` | Position of the panel: `'top-right'`, `'top-left'`, `'bottom-right'`, `'bottom-left'` |
+
+**Note:** Both components (sync-status and debug) can be customized by publishing the views. See [Publishing Components](#publishing-components) for details.
 
 ### 6. Run Your Application
 
