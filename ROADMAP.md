@@ -483,6 +483,293 @@ Simply replay all queued Livewire method calls in order! Each method runs on the
 
 ## 🔧 Optimization & Compatibility
 
+### Static AST Analysis for Method Detection
+Replace runtime SQL query capture with static PHP Abstract Syntax Tree (AST) analysis.
+
+**Status:** 📋 Planned
+**Complexity:** High
+**Priority:** High (Security & Performance)
+
+**Current Approach (Runtime SQL Capture):**
+- Executes component methods with dummy data in rolled-back transactions
+- Captures SQL queries to determine operation types (INSERT/UPDATE/DELETE)
+- Extracts which columns are affected
+- **Security concerns**: Side effects (emails, API calls), dummy data creation, public manifest exposure
+- **Performance concerns**: SQL analysis runs on every Volt component render
+
+**Proposed Approach (Static AST Analysis):**
+Parse PHP code without executing it, using PHP-Parser or similar libraries to build an Abstract Syntax Tree and extract method semantics.
+
+**What We CAN Detect Statically (90%+ of cases):**
+
+```php
+// Example 1: Create with field mapping
+public function addTodo() {
+    auth()->user()->todos()->create([
+        'title' => $this->newTodoTitle,
+        'description' => $this->newTodoDescription,
+    ]);
+}
+```
+**AST Extraction**:
+- ✅ Method called: `create()` → Operation: INSERT
+- ✅ Columns: `['title', 'description']`
+- ✅ Field mapping: `{newTodoTitle: 'title', newTodoDescription: 'description'}`
+- ✅ Model: `Todo` (from `todos()` relationship)
+
+```php
+// Example 2: Toggle detection
+public function toggleCompleted($id) {
+    $todo = Todo::findOrFail($id);
+    $todo->update(['completed' => !$todo->completed]);
+}
+```
+**AST Extraction**:
+- ✅ Method: `update()` → Operation: UPDATE
+- ✅ Column: `'completed'`
+- ✅ Pattern: Boolean toggle (unary `!` operator)
+- ✅ Model: `Todo` (from static call)
+
+```php
+// Example 3: Relationship-based create
+public function store() {
+    $this->user->posts()->create([
+        'title' => $this->title,
+        'body' => $this->body,
+    ]);
+}
+```
+**AST Extraction**:
+- ✅ Method: `create()` → INSERT
+- ✅ Model: `Post` (from `posts()` relationship)
+- ✅ Columns: `['title', 'body']`
+- ✅ Direct field mapping (property names match columns)
+
+**What We CAN'T Detect (Rare edge cases):**
+
+```php
+// Dynamic columns from runtime data
+public function update(Request $request) {
+    $columns = $request->only(['title', 'description']); // Runtime value
+    $todo->update($columns); // Can't statically determine columns
+}
+
+// Conditional logic with complex branching
+public function save() {
+    if ($this->someComplexCondition()) {
+        Model::create(['field1' => ...]);
+    } else {
+        Model::update(['field2' => ...]);
+    }
+}
+```
+
+**Implementation Plan:**
+
+1. **Add PHP-Parser dependency**: `composer require nikic/php-parser`
+
+2. **Create AST Analyzer Service**:
+   ```php
+   class EloquentMethodAnalyzer {
+       public function analyzeMethod(\ReflectionMethod $method): MethodAnalysis {
+           $ast = $this->parseMethodSource($method);
+           return $this->extractEloquentCalls($ast);
+       }
+
+       private function extractEloquentCalls(Node $ast): MethodAnalysis {
+           // Traverse AST looking for:
+           // - create() calls → INSERT + extract array keys
+           // - update() calls → UPDATE + extract array keys
+           // - delete() calls → DELETE
+           // - Relationship chains (todos(), user()->posts())
+       }
+   }
+   ```
+
+3. **Extract Field Mappings**:
+   ```php
+   // When we see: 'title' => $this->newTodoTitle
+   // AST shows:
+   // - Array key: 'title' (database column)
+   // - Value: Property access to 'newTodoTitle' (component property)
+   // → Mapping: newTodoTitle → title
+   ```
+
+4. **Toggle Detection**:
+   ```php
+   // When we see: 'completed' => !$model->completed
+   // AST shows:
+   // - Key: 'completed'
+   // - Value: UnaryOp_BooleanNot of property access
+   // → Boolean toggle on 'completed' column
+   ```
+
+5. **Fallback Strategy**:
+   - For 90% of methods: Use static analysis
+   - For complex/dynamic cases: Fall back to current SQL capture
+   - Log when fallback is used to track coverage
+
+**Benefits:**
+
+✅ **Security**:
+- No code execution during analysis
+- No side effects (emails, API calls, webhooks)
+- No dummy data in database
+- Can sanitize manifest before exposing publicly
+
+✅ **Performance**:
+- Zero runtime overhead for Volt components
+- Analysis only during `php artisan duo:generate`
+- Scales to thousands of components
+
+✅ **Accuracy**:
+- Detects field mappings (`newTodoTitle` → `title`)
+- Identifies boolean toggles automatically
+- Extracts relationships and models precisely
+
+✅ **Developer Experience**:
+- Works with any coding style
+- Handles `addTodo`, `createTodo`, `bananaTodo` equally
+- Clear error messages when pattern isn't recognized
+
+**Testing Strategy:**
+
+```php
+// Test suite covering common patterns
+test('detects create operations', function () {
+    $analysis = $analyzer->analyze(CreateTodoMethod::class);
+
+    expect($analysis->operationType)->toBe('insert');
+    expect($analysis->columns)->toBe(['title', 'description']);
+    expect($analysis->fieldMapping)->toBe([
+        'newTodoTitle' => 'title',
+        'newTodoDescription' => 'description',
+    ]);
+});
+```
+
+**Manifest Output:**
+
+```json
+{
+  "components": {
+    "TodoDemo": {
+      "methods": {
+        "addTodo": {
+          "operationType": "insert",
+          "model": "App\\Models\\Todo",
+          "columns": ["title", "description"],
+          "fieldMapping": {
+            "newTodoTitle": "title",
+            "newTodoDescription": "description"
+          },
+          "analysisMethod": "static" // or "runtime" if fallback used
+        },
+        "toggleTodo": {
+          "operationType": "update",
+          "model": "App\\Models\\Todo",
+          "columns": ["completed"],
+          "pattern": "toggle",
+          "analysisMethod": "static"
+        }
+      }
+    }
+  }
+}
+```
+
+**Migration Path:**
+
+1. Implement static analysis alongside current SQL capture
+2. Compare results in development (log discrepancies)
+3. Gradually increase static analysis coverage
+4. Eventually deprecate SQL capture for static-analyzable methods
+5. Keep SQL capture as fallback for dynamic cases
+
+**Related Issues:**
+- Solves field mapping problems (newTodoTitle vs title)
+- Eliminates security concerns with code execution
+- Makes Volt components as efficient as class-based components
+- Enables manifest sanitization before public exposure
+
+---
+
+### Cache Method Analysis in Manifest
+Cache method operation types and parameters in manifest to eliminate runtime reflection.
+
+**Status:** 📋 Planned
+**Complexity:** Medium
+
+**Problem:** Currently, page renders still perform method reflection (reading signatures, parameters) even though SQL capture is skipped. This adds unnecessary overhead on every page load.
+
+**Proposed Solution:** Store method analysis results in the manifest during generation, then read from manifest on page renders.
+
+**Current Flow:**
+```
+Page Render:
+  ↓
+Method Reflection (get signatures, parameters)
+  ↓
+Generate Alpine Methods
+  ↓
+Render to HTML
+```
+
+**Optimized Flow:**
+```
+Manifest Generation (one-time):
+  ↓
+Method Reflection + SQL Analysis
+  ↓
+Store in manifest.json
+
+Page Render (every request):
+  ↓
+Read from manifest (no reflection!)
+  ↓
+Generate Alpine Methods
+  ↓
+Render to HTML
+```
+
+**Manifest Structure:**
+```json
+{
+  "stores": { ... },
+  "components": {
+    "TodoDemo": {
+      "methods": {
+        "addTodo": {
+          "operationType": "insert",
+          "parameters": ["newTodoTitle", "newTodoDescription"],
+          "updatedColumns": [],
+          "validation": { "newTodoTitle": "required|min:3" }
+        },
+        "toggleTodo": {
+          "operationType": "update",
+          "parameters": ["id"],
+          "updatedColumns": ["completed"]
+        }
+      }
+    }
+  }
+}
+```
+
+**Benefits:**
+- ✅ Zero reflection overhead on page renders
+- ✅ Faster page loads
+- ✅ Consistent method info across renders
+- ✅ Easier debugging (see what Duo detected)
+- ✅ Could enable external tooling to read manifest
+
+**Implementation:**
+1. During `duo:generate`, store method analysis in manifest
+2. On page renders, read method info from manifest instead of reflection
+3. Fall back to reflection if manifest is stale or missing
+
+---
+
 ### Alpine.js Optimization
 Leverage Alpine.js plugins and optimizations.
 
