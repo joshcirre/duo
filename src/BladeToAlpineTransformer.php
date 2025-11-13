@@ -192,7 +192,7 @@ class BladeToAlpineTransformer
         $structure = $directive->structure;
         $primaryBranch = $structure->getPrimaryBranch(); // @if branch
         $elseBranches = $structure->getElseBranches();
-        $elseBranch = $elseBranches[0] ?? null;
+        $elseBranch = (!empty($elseBranches)) ? $elseBranches[0] : null;
 
         if (! $elseBranch) {
             \Log::warning('[Duo] No @else branch found, skipping');
@@ -440,6 +440,24 @@ BLADE;
     }
 
     /**
+     * Find method information by name from component methods.
+     */
+    protected function findMethodByName(string $methodName): ?array
+    {
+        if (!$this->componentMethods) {
+            return null;
+        }
+        
+        foreach ($this->componentMethods as $method) {
+            if ($method['name'] === $methodName) {
+                return $method;
+            }
+        }
+        
+        return null;
+    }
+
+    /**
      * Transform loop content from Blade to Alpine
      */
     protected function transformLoopContentToAlpine(string $content, string $itemVar): string
@@ -447,13 +465,33 @@ BLADE;
         // Remove wire:key attributes
         $content = preg_replace('/\s*wire:key="[^"]*"/', '', $content);
 
-        // Transform @click="method({{ $item }})" to @click="method(item)"
+        // Transform @click="method({{ $item }})" to @click="method(item)" or @click="method(item.id)"
         // Note: wire:click has already been converted to @click by the global replacement
         $content = preg_replace_callback(
             '/@click="(\w+)\(\{\{\s*\$' . $itemVar . '\s*\}\}\)"/',
             function ($matches) use ($itemVar) {
-                $method = $matches[1];
-                return '@click="' . $method . '(' . $itemVar . ')"';
+                $methodName = $matches[1];
+                
+                // Check if this method expects a model parameter (route model binding)
+                $methodInfo = $this->findMethodByName($methodName);
+                $isModelParameter = false;
+                
+                if ($methodInfo && isset($methodInfo['paramTypes'])) {
+                    foreach ($methodInfo['paramTypes'] as $paramType) {
+                        if ($paramType['isModel']) {
+                            $isModelParameter = true;
+                            break;
+                        }
+                    }
+                }
+                
+                if ($isModelParameter) {
+                    // For model parameters, pass the ID instead of full object
+                    return '@click="' . $methodName . '(' . $itemVar . '.id)"';
+                } else {
+                    // For regular parameters, pass the full object
+                    return '@click="' . $methodName . '(' . $itemVar . ')"';
+                }
             },
             $content
         );
@@ -897,7 +935,7 @@ BLADE;
         $structure = $directive->structure;
         $primaryBranch = $structure->getPrimaryBranch(); // @if branch
         $elseBranches = $structure->getElseBranches();
-        $elseBranch = $elseBranches[0] ?? null;
+        $elseBranch = (!empty($elseBranches)) ? $elseBranches[0] : null;
 
         if (! $elseBranch) {
             return $html;
@@ -1162,7 +1200,8 @@ BLADE;
         }
 
         // Check if this collection contains Duo-synced models
-        $sampleItem = $this->componentData[$collectionName][0] ?? null;
+        $collectionData = $this->componentData[$collectionName] ?? [];
+        $sampleItem = (!empty($collectionData)) ? $collectionData[0] : null;
         if (! $this->isSyncableModel($sampleItem)) {
             \Log::info('[Duo] Collection does not contain syncable models, skipping transformation', [
                 'collection' => $collectionName,
@@ -1183,7 +1222,8 @@ BLADE;
             'modelClass' => get_class($sampleItem),
         ]);
 
-        $sampleItem = $this->componentData[$collectionName][0] ?? null;
+        $collectionData = $this->componentData[$collectionName] ?? [];
+        $sampleItem = (!empty($collectionData)) ? $collectionData[0] : null;
 
         // Find the rendered loop in HTML using wire:key
         return $this->transformRenderedLoop($html, $collectionName, $itemVarName, $sampleItem, $directive, $wireKeyPattern);
@@ -1529,6 +1569,9 @@ BLADE;
         }
 
         // Get the last match (closest to the first item)
+        if (empty($matches[0])) {
+            return null;
+        }
         $lastMatch = end($matches[0]);
         $openTag = $lastMatch[0];
         $startPos = $lastMatch[1];
@@ -1731,17 +1774,48 @@ BLADE;
         }
 
         if (str_starts_with($methodName, 'update') || str_starts_with($methodName, 'edit')) {
-            return $this->generateUpdateMethod($methodName, $paramNames);
+            $paramTypes = $methodInfo['paramTypes'] ?? [];
+            return $this->generateUpdateMethod($methodName, $paramNames, $paramTypes);
         }
 
         if (str_starts_with($methodName, 'delete') || str_starts_with($methodName, 'destroy')) {
-            return $this->generateDeleteMethod($methodName, $paramNames);
+            $paramTypes = $methodInfo['paramTypes'] ?? [];
+            return $this->generateDeleteMethod($methodName, $paramNames, $paramTypes);
         }
 
-        // Default method - just placeholder for now
-        return "{$methodName}({$paramString}) {
-            console.warn('[Duo] Method {$methodName} not yet implemented for offline use');
-        }";
+        // Default method - generic handler for any method
+        // Try to determine if this is a CRUD operation based on parameters
+        $hasModelParam = false;
+        if (!empty($methodInfo['paramTypes'])) {
+            foreach ($methodInfo['paramTypes'] as $paramType) {
+                if ($paramType['isModel']) {
+                    $hasModelParam = true;
+                    break;
+                }
+            }
+        }
+        
+        if ($hasModelParam && !empty($paramNames)) {
+            // For methods with model parameters, try to handle generically
+            return "async {$methodName}({$paramString}) {
+                if (!window.duo) {
+                    console.error('[Duo] Duo client not initialized');
+                    return;
+                }
+                
+                console.warn('[Duo] Method {$methodName} requires custom implementation for offline use');
+                // Fallback: try to call original Livewire method when online
+                if (navigator.onLine) {
+                    // This would require Livewire integration - for now just log
+                    console.log('[Duo] Would call Livewire method:', '{$methodName}', arguments);
+                }
+            }";
+        } else {
+            // For methods without model parameters, basic placeholder
+            return "{$methodName}({$paramString}) {
+                console.warn('[Duo] Method {$methodName} not yet implemented for offline use');
+            }";
+        }
     }
 
     /**
@@ -1895,11 +1969,17 @@ BLADE;
     /**
      * Generate an update method for Alpine
      */
-    protected function generateUpdateMethod(string $methodName, array $paramNames): string
+    protected function generateUpdateMethod(string $methodName, array $paramNames, array $paramTypes = []): string
     {
         $modelName = $this->extractModelFromMethodName($methodName);
         $storeName = $this->getStoreName($modelName);
-        $recordParam = $paramNames[0] ?? 'record';
+        $recordParam = (!empty($paramNames)) ? $paramNames[0] : 'record';
+        
+        // Check if first parameter is a model (route model binding)
+        $isModelParameter = false;
+        if (!empty($paramTypes) && isset($paramTypes[0])) {
+            $isModelParameter = $paramTypes[0]['isModel'] ?? false;
+        }
 
         return "async {$methodName}({$recordParam}) {
             if (!window.duo) {
@@ -1920,9 +2000,24 @@ BLADE;
             }
 
             try {
-                // Update record in IndexedDB
+                // Handle both ID and full object cases
+                let recordToUpdate;
+                " . ($isModelParameter ? "
+                // If parameter is an ID, fetch the record first
+                if (typeof {$recordParam} === 'number' || typeof {$recordParam} === 'string') {
+                    recordToUpdate = await store.get({$recordParam});
+                    if (!recordToUpdate) {
+                        console.error('[Duo] Record not found:', {$recordParam});
+                        return;
+                    }
+                } else {
+                    recordToUpdate = {$recordParam};
+                }" : "
+                // If parameter is already a full object, use it directly
+                recordToUpdate = {$recordParam};") . "
+
                 const updatedRecord = {
-                    ...{$recordParam},
+                    ...recordToUpdate,
                     _duo_pending_sync: true,
                     _duo_operation: 'update'
                 };
@@ -1950,11 +2045,17 @@ BLADE;
     /**
      * Generate a delete method for Alpine
      */
-    protected function generateDeleteMethod(string $methodName, array $paramNames): string
+    protected function generateDeleteMethod(string $methodName, array $paramNames, array $paramTypes = []): string
     {
         $modelName = $this->extractModelFromMethodName($methodName);
         $storeName = $this->getStoreName($modelName);
-        $recordParam = $paramNames[0] ?? 'record';
+        $recordParam = (!empty($paramNames)) ? $paramNames[0] : 'record';
+        
+        // Check if first parameter is a model (route model binding)
+        $isModelParameter = false;
+        if (!empty($paramTypes) && isset($paramTypes[0])) {
+            $isModelParameter = $paramTypes[0]['isModel'] ?? false;
+        }
 
         return "async {$methodName}({$recordParam}) {
             if (!window.duo) {

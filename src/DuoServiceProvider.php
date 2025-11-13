@@ -385,9 +385,21 @@ final class DuoServiceProvider extends ServiceProvider
             // Extract validation rules from the method
             $validationRules = $this->extractValidationFromMethod($method, $component);
 
+            // Extract parameter types for model binding detection
+            $paramTypes = [];
+            foreach ($method->getParameters() as $param) {
+                $paramTypes[] = [
+                    'name' => $param->getName(),
+                    'type' => $param->getType()?->getName(),
+                    'isBuiltin' => $param->getType()?->isBuiltin() ?? true,
+                    'isModel' => $param->getType() && !$param->getType()->isBuiltin() && class_exists($param->getType()->getName()),
+                ];
+            }
+
             $methods[] = [
                 'name' => $method->getName(),
                 'parameters' => $method->getParameters(),
+                'paramTypes' => $paramTypes,
                 'validation' => $validationRules,
             ];
         }
@@ -846,7 +858,7 @@ final class DuoServiceProvider extends ServiceProvider
             // Determine operation based on method naming convention
             if (str_starts_with($methodName, 'add') || str_starts_with($methodName, 'create')) {
                 // CREATE operation - use detected form fields
-                $primaryField = $formFields[0] ?? 'title'; // Use first field or default to 'title'
+                $primaryField = (!empty($formFields)) ? $formFields[0] : 'title'; // Use first field or default to 'title'
 
                 // Build validation check (first field is required)
                 $validation = "if (!this.{$primaryField} || this.{$primaryField}.trim().length < 3) {
