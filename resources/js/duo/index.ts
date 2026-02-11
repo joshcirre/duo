@@ -1,6 +1,7 @@
 import { DuoDatabase, type DuoConfig, type DuoRecord } from './core/database';
 import { SyncQueue, type SyncQueueConfig } from './sync/queue';
 import { ServiceWorkerManager, type ServiceWorkerConfig } from './offline/service-worker-manager';
+import { DuoLivewireInterceptor } from './livewire/duo-interceptor';
 import { liveQuery } from 'dexie';
 
 export interface DuoClientConfig {
@@ -12,13 +13,11 @@ export interface DuoClientConfig {
   offline?: ServiceWorkerConfig;
 }
 
-/**
- * Main Duo Client
- */
 export class DuoClient {
   private db?: DuoDatabase;
   private syncQueue?: SyncQueue;
   private serviceWorkerManager?: ServiceWorkerManager;
+  private interceptor?: DuoLivewireInterceptor;
   private config: DuoClientConfig;
 
   constructor(config: DuoClientConfig = {}) {
@@ -35,23 +34,13 @@ export class DuoClient {
     };
   }
 
-  /**
-   * Initialize the Duo client
-   */
   async initialize(): Promise<void> {
-    // Load manifest (either passed directly or fetched)
-    const manifestData = this.config.manifest || await this.loadManifest();
+    const manifestData = this.config.manifest || (await this.loadManifest());
 
-    // Extract schema version and stores from manifest
-    // Manifest structure: { _version: timestamp, stores: {...} }
     const schemaVersion = manifestData._version || 1;
-    const stores = manifestData.stores || manifestData; // Fallback for old format
-
-    // Create a unique database name per application origin
-    // This prevents multiple apps on the same domain from sharing IndexedDB
+    const stores = manifestData.stores || manifestData;
     const databaseName = this.generateDatabaseName();
 
-    // Create database with timestamp-based version (like Laravel migrations)
     const dbConfig: DuoConfig = {
       databaseName,
       databaseVersion: schemaVersion,
@@ -62,13 +51,9 @@ export class DuoClient {
     this.db = new DuoDatabase(dbConfig);
 
     if (this.config.debug) {
-      console.log(`[Duo] Database initialized: ${databaseName} (origin: ${window.location.origin})`);
+      console.log(`[Duo] Database initialized: ${databaseName}`);
     }
 
-    // Hydrate stores from server on first load
-    await this.hydrateStores();
-
-    // Create sync queue
     const syncConfig: SyncQueueConfig = {
       maxRetries: this.config.maxRetries!,
       syncInterval: this.config.syncInterval!,
@@ -77,15 +62,11 @@ export class DuoClient {
         if (this.config.debug) {
           console.log('[Duo] Sync successful:', operation);
         }
-
-        // Dispatch browser event for Alpine components
-        window.dispatchEvent(new CustomEvent('duo-synced', {
-          detail: { operation },
-        }));
-
-        // Dispatch Livewire event for Livewire components
-        if (typeof window !== 'undefined' && (window as any).Livewire) {
-          (window as any).Livewire.dispatch('duo-synced', { operation });
+        window.dispatchEvent(
+          new CustomEvent('duo-synced', { detail: { operation } })
+        );
+        if (window.Livewire) {
+          window.Livewire.dispatch('duo-synced', { operation });
         }
       },
       onSyncError: (operation, error) => {
@@ -95,6 +76,12 @@ export class DuoClient {
 
     this.syncQueue = new SyncQueue(this.db, syncConfig);
     this.syncQueue.start();
+
+    // Initialize the Livewire interceptor for offline support
+    this.interceptor = new DuoLivewireInterceptor(this.db, this.syncQueue, {
+      debug: this.config.debug,
+    });
+    this.interceptor.initialize();
 
     // Register service worker for offline page caching
     if (this.config.offline?.enabled !== false) {
@@ -109,9 +96,6 @@ export class DuoClient {
     }
   }
 
-  /**
-   * Load the manifest file
-   */
   private async loadManifest(): Promise<Record<string, any>> {
     try {
       const response = await fetch(this.config.manifestPath!);
@@ -125,87 +109,48 @@ export class DuoClient {
     }
   }
 
-  /**
-   * Generate a unique database name based on the application origin
-   * This ensures each app has its own IndexedDB even on the same domain
-   */
   private generateDatabaseName(): string {
-    // Use origin (protocol + hostname + port) to create unique database name
     const origin = window.location.origin;
-
-    // Simple hash function to create a short identifier
     const hash = this.simpleHash(origin);
-
     return `duo_${hash}`;
   }
 
-  /**
-   * Simple string hash function for creating database identifiers
-   */
   private simpleHash(str: string): string {
     let hash = 0;
     for (let i = 0; i < str.length; i++) {
       const char = str.charCodeAt(i);
-      hash = ((hash << 5) - hash) + char;
-      hash = hash & hash; // Convert to 32bit integer
+      hash = (hash << 5) - hash + char;
+      hash = hash & hash;
     }
     return Math.abs(hash).toString(36);
   }
 
-  /**
-   * Hydrate stores from server on first load
-   * Note: This is now handled by Alpine integration on component mount
-   * which syncs server data from x-data to IndexedDB on every page load
-   */
-  private async hydrateStores(): Promise<void> {
-    // This method is kept for backward compatibility but is now a no-op
-    // Server data syncing happens in alpine-integration.ts via x-data
-    if (this.config.debug) {
-      console.log('[Duo] Hydration will be handled by Alpine integration on component mount');
-    }
-  }
-
-  /**
-   * Get the database instance
-   */
   getDatabase(): DuoDatabase | undefined {
     return this.db;
   }
 
-  /**
-   * Get the sync queue instance
-   */
   getSyncQueue(): SyncQueue | undefined {
     return this.syncQueue;
   }
 
-  /**
-   * Get the service worker manager instance
-   */
+  getInterceptor(): DuoLivewireInterceptor | undefined {
+    return this.interceptor;
+  }
+
   getServiceWorkerManager(): ServiceWorkerManager | undefined {
     return this.serviceWorkerManager;
   }
 
-  /**
-   * Get liveQuery for reactive queries
-   */
   liveQuery<T>(querier: () => T | Promise<T>) {
     return liveQuery(querier);
   }
 
-  /**
-   * Manually trigger a sync
-   */
   async sync(): Promise<void> {
-    // This will be called by the sync queue automatically
     if (this.config.debug) {
       console.log('[Duo] Manual sync triggered');
     }
   }
 
-  /**
-   * Clear all cached data (IndexedDB and Service Worker caches)
-   */
   async clearCache(): Promise<void> {
     await this.db?.clearAll();
     await this.serviceWorkerManager?.clearCache();
@@ -214,9 +159,6 @@ export class DuoClient {
     }
   }
 
-  /**
-   * Destroy the client and cleanup
-   */
   async destroy(): Promise<void> {
     this.syncQueue?.stop();
     await this.db?.close();
@@ -231,10 +173,9 @@ export class DuoClient {
 // Global instance
 let duoInstance: DuoClient | null = null;
 
-/**
- * Initialize Duo with configuration
- */
-export async function initializeDuo(config?: DuoClientConfig): Promise<DuoClient> {
+export async function initializeDuo(
+  config?: DuoClientConfig
+): Promise<DuoClient> {
   if (duoInstance) {
     return duoInstance;
   }
@@ -242,7 +183,6 @@ export async function initializeDuo(config?: DuoClientConfig): Promise<DuoClient
   duoInstance = new DuoClient(config);
   await duoInstance.initialize();
 
-  // Make it globally available for easy access
   if (typeof window !== 'undefined') {
     (window as any).duo = duoInstance;
   }
@@ -250,24 +190,14 @@ export async function initializeDuo(config?: DuoClientConfig): Promise<DuoClient
   return duoInstance;
 }
 
-/**
- * Get the global Duo instance
- */
 export function getDuo(): DuoClient | null {
   return duoInstance;
 }
 
-// Re-export types and classes
-export { DuoDatabase, SyncQueue };
+export { DuoDatabase, SyncQueue, DuoLivewireInterceptor };
 export type { DuoConfig, DuoRecord, SyncQueueConfig };
 
-/**
- * Helper functions for easy data access
- */
-
-/**
- * Get all records from a table
- */
+// Helper functions for easy data access
 export async function getAll(table: string): Promise<any[]> {
   const duo = getDuo();
   if (!duo || !duo.getDatabase()) return [];
@@ -279,10 +209,10 @@ export async function getAll(table: string): Promise<any[]> {
   return await store.toArray();
 }
 
-/**
- * Get a single record by ID
- */
-export async function getById(table: string, id: number | string): Promise<any | null> {
+export async function getById(
+  table: string,
+  id: number | string
+): Promise<any | null> {
   const duo = getDuo();
   if (!duo || !duo.getDatabase()) return null;
 
@@ -293,10 +223,10 @@ export async function getById(table: string, id: number | string): Promise<any |
   return await store.get(id);
 }
 
-/**
- * Create a new record
- */
-export async function create(table: string, data: Record<string, any>): Promise<any> {
+export async function create(
+  table: string,
+  data: Record<string, any>
+): Promise<any> {
   const duo = getDuo();
   if (!duo || !duo.getDatabase() || !duo.getSyncQueue()) {
     throw new Error('Duo not initialized');
@@ -307,7 +237,6 @@ export async function create(table: string, data: Record<string, any>): Promise<
 
   if (!store) throw new Error(`Store not found: ${storeName}`);
 
-  // Generate temporary ID for optimistic update
   const tempId = Date.now();
   const record = {
     ...data,
@@ -318,7 +247,6 @@ export async function create(table: string, data: Record<string, any>): Promise<
 
   await store.put(record);
 
-  // Queue for sync
   await duo.getSyncQueue()!.enqueue({
     storeName,
     operation: 'create',
@@ -328,10 +256,11 @@ export async function create(table: string, data: Record<string, any>): Promise<
   return record;
 }
 
-/**
- * Update an existing record
- */
-export async function update(table: string, id: number | string, data: Record<string, any>): Promise<any> {
+export async function update(
+  table: string,
+  id: number | string,
+  data: Record<string, any>
+): Promise<any> {
   const duo = getDuo();
   if (!duo || !duo.getDatabase() || !duo.getSyncQueue()) {
     throw new Error('Duo not initialized');
@@ -354,7 +283,6 @@ export async function update(table: string, id: number | string, data: Record<st
 
   await store.put(updated);
 
-  // Queue for sync
   await duo.getSyncQueue()!.enqueue({
     storeName,
     operation: 'update',
@@ -364,10 +292,10 @@ export async function update(table: string, id: number | string, data: Record<st
   return updated;
 }
 
-/**
- * Delete a record
- */
-export async function remove(table: string, id: number | string): Promise<void> {
+export async function remove(
+  table: string,
+  id: number | string
+): Promise<void> {
   const duo = getDuo();
   if (!duo || !duo.getDatabase() || !duo.getSyncQueue()) {
     throw new Error('Duo not initialized');
@@ -381,15 +309,12 @@ export async function remove(table: string, id: number | string): Promise<void> 
   const existing = await store.get(id);
   if (!existing) return;
 
-  // Mark as pending deletion instead of deleting immediately
-  // This allows the sync status component to count it as pending
   await store.put({
     ...existing,
     _duo_pending_sync: true,
     _duo_operation: 'delete' as const,
   });
 
-  // Queue for sync
   await duo.getSyncQueue()!.enqueue({
     storeName,
     operation: 'delete',

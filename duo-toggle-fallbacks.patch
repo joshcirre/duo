@@ -1,0 +1,1043 @@
+diff --git a/ROADMAP.md b/ROADMAP.md
+index 7c75ac1..3720689 100644
+--- a/ROADMAP.md
++++ b/ROADMAP.md
+@@ -479,6 +479,26 @@ Simply replay all queued Livewire method calls in order! Each method runs on the
+ - Handle validation errors gracefully
+ - Performance impact of queued method calls
+ 
++### Lazy Query Detection & Renderless Fallbacks
++Take advantage of two emerging Livewire patterns to make Duo smarter before we rewrite every component by hand.
++
++**Ideas to Prototype:**
++
++1. **Lazy query interception (PHP 8.4 `jit()` macro):** wrap Eloquent builders in lazy proxies (à la Caleb Porzio's tweet) during the detection phase so Duo only executes queries *when the collection is actually iterated*. This would let us capture ORDER BY clauses, model types, and filters without guessing from query logs or risking premature execution. Integration points:
++   - Register a `Builder::macro('jit', ...)` inside DuoServiceProvider when Livewire boots.
++   - When a computed property returns `$this->todos->jit()`, attach metadata listeners that Duo can read before transforming Blade.
++   - Store the captured metadata alongside `componentData` so BladeToAlpineTransformer can always map loops → real model collections.
++
++2. **Renderless Livewire fallbacks:** for methods we haven't fully ported to IndexedDB yet (analytics pings, complex toggles, etc.), call the Livewire action via `wire:click.renderless` or the `#[Renderless]` attribute in parallel with the Alpine update. That keeps the DOM controlled by Alpine, but the original Livewire method still runs (and queues) whenever there is network connectivity.
++   - Expose a helper like `callRenderlessFallback('toggleTodo', params)` in Alpine.
++   - When offline, capture the intent in IndexedDB and replay it with Livewire's standard `/livewire/update` endpoint once we're back online (see architecture refactor above).
++   - Use Livewire's built-in `skipRender()` semantics so these fallback calls never re-render HTML and interfere with the Alpine-managed DOM.
++
++**Why this matters:**
++- More accurate metadata for arbitrary Livewire apps (no special cases for Volt demos).
++- Easier “convert everything to Alpine, but keep Livewire under the hood” story.
++- Gives us a migration path: Duo can optimistically update IndexedDB/Alpine instantly, but Livewire still runs authoritative server logic whenever possible.
++
+ ---
+ 
+ ## 🔧 Optimization & Compatibility
+diff --git a/src/BladeToAlpineTransformer.php b/src/BladeToAlpineTransformer.php
+index 8f2b6b7..e44f380 100644
+--- a/src/BladeToAlpineTransformer.php
++++ b/src/BladeToAlpineTransformer.php
+@@ -280,9 +280,30 @@ class BladeToAlpineTransformer
+         ]);
+ 
+         // Replace in the source (add +1 to include the last character of @endif)
+-        $transformed = substr_replace($blade, $replacement, $ifStart, ($endifEnd + 1) - $ifStart);
+-
+-        return $transformed;
++        $newBlade = substr_replace($blade, $replacement, $ifStart, ($endifEnd + 1) - $ifStart);
++        
++        // IMPORTANT: Also update any @if conditions that reference this->collection to use collectionName
++        // This fixes "Undefined variable" errors when foreach is transformed to Alpine
++        $primaryBranch = $structure->getPrimaryBranch();
++        if (!$primaryBranch) {
++            \Log::warning('[Duo] No primary branch found in conditional structure');
++            return $newBlade;
++        }
++        
++        $originalCondition = $primaryBranch->expression ?? null;
++        if ($originalCondition && preg_match('/\$this->' . preg_quote($collectionName, '/') . '/', $originalCondition)) {
++            // Replace $this->collection with just collectionName in condition
++            $updatedCondition = preg_replace('/\$this->' . preg_quote($collectionName, '/') . '/', $collectionName, $originalCondition);
++            $newBlade = str_replace($originalCondition, $updatedCondition, $newBlade);
++            
++            \Log::info('[Duo] Updated @if condition', [
++                'original' => $originalCondition,
++                'updated' => $updatedCondition,
++                'collection' => $collectionName,
++            ]);
++        }
++        
++        return $newBlade;
+     }
+ 
+     /**
+@@ -465,6 +486,12 @@ BLADE;
+         // Remove wire:key attributes
+         $content = preg_replace('/\s*wire:key="[^"]*"/', '', $content);
+ 
++        // Convert Blade expressions inside attributes to Alpine bindings
++        $content = $this->transformAttributeExpressions($content, $itemVar);
++
++        // Convert standalone Blade echoes that toggle boolean attributes (e.g., {{ $todo->done ? 'checked' : '' }})
++        $content = $this->transformStandaloneBooleanAttributeEchoes($content, $itemVar);
++
+         // Transform @click="method({{ $item }})" to @click="method(item)" or @click="method(item.id)"
+         // Note: wire:click has already been converted to @click by the global replacement
+         $content = preg_replace_callback(
+@@ -496,24 +523,325 @@ BLADE;
+             $content
+         );
+ 
+-        // Transform {{ $item->property }} expressions
+-        // Replace with <span x-text="..."></span>
+-        $content = preg_replace_callback(
+-            '/\{\{\s*\$' . $itemVar . '->(\w+)(?:->(\w+)\(\))?\s*\}\}/',
+-            function ($matches) use ($itemVar) {
+-                $property = $matches[1];
+-                $method = $matches[2] ?? null;
++        // Transform any remaining {{ $item ... }} expressions into Alpine bindings
++        $content = $this->replaceItemEchoesWithSpans($content, $itemVar);
++
++        return $content;
++    }
++
++    /**
++     * Convert Blade expressions inside standard HTML attributes to Alpine bindings.
++     */
++    protected function transformAttributeExpressions(string $content, string $itemVar): string
++    {
++        $doubleQuotePattern = '/(\s+)([\w:-]+)="([^"]*\{\{.*?\}\}[^"]*)"/s';
++        $singleQuotePattern = "/(\s+)([\\w:-]+)='([^']*\\{\\{.*?\\}\\}[^']*)'/s";
++
++        $content = $this->applyAttributeTransformation($content, $itemVar, $doubleQuotePattern);
++
++        return $this->applyAttributeTransformation($content, $itemVar, $singleQuotePattern);
++    }
++
++    /**
++     * Apply attribute conversion for a specific quote style pattern.
++     */
++    protected function applyAttributeTransformation(string $content, string $itemVar, string $pattern): string
++    {
++        return preg_replace_callback($pattern, function ($matches) use ($itemVar) {
++            $whitespace = $matches[1];
++            $attribute = $matches[2];
++            $value = $matches[3];
++
++            // Skip directives and attributes that already have Alpine bindings
++            if (str_starts_with($attribute, '@')
++                || str_starts_with($attribute, 'x-')
++                || str_starts_with($attribute, ':')
++                || str_starts_with($attribute, 'wire:')
++            ) {
++                return $matches[0];
++            }
++
++            $jsExpression = $this->convertAttributeValueToJs($value, $itemVar);
++
++            if ($jsExpression === null) {
++                return $matches[0];
++            }
++
++            $bindingAttribute = 'x-bind:'.$attribute;
++
++            return $whitespace.$bindingAttribute.'="'
++                .htmlspecialchars($jsExpression, ENT_QUOTES, 'UTF-8').'"';
++        }, $content);
++    }
++
++    /**
++     * Convert standalone Blade echoes (not attached to an attribute) that toggle boolean attributes.
++     */
++    protected function transformStandaloneBooleanAttributeEchoes(string $content, string $itemVar): string
++    {
++        $pattern = '/(?P<indent>[^\S\r\n]*)\{\{\s*(?P<condition>[^?]+?)\s*\?\s*(["\'])(?P<true>[^"\']*)\3\s*:\s*(["\'])(?P<false>[^"\']*)\5\s*\}\}/m';
++        $booleanAttributes = [
++            'checked', 'selected', 'disabled', 'readonly', 'required',
++            'multiple', 'autofocus', 'open', 'hidden',
++        ];
++
++        return preg_replace_callback($pattern, function ($matches) use ($booleanAttributes, $itemVar) {
++            $trueValue = strtolower(trim($matches['true']));
++            $falseValue = strtolower(trim($matches['false']));
++
++            $trueAttr = in_array($trueValue, $booleanAttributes, true);
++            $falseAttr = in_array($falseValue, $booleanAttributes, true);
++            $falseIsEmpty = $falseValue === '';
++            $trueIsEmpty = $trueValue === '';
++
++            $targetAttr = null;
++            $invertCondition = false;
++
++            if ($trueAttr && $falseIsEmpty) {
++                $targetAttr = $trueValue;
++            } elseif ($falseAttr && $trueIsEmpty) {
++                $targetAttr = $falseValue;
++                $invertCondition = true;
++            } else {
++                // Not a boolean attribute toggle we can transform
++                return $matches[0];
++            }
++
++            $jsCondition = $this->convertPhpExpressionToJs($matches['condition'], $itemVar);
++            if ($jsCondition === null) {
++                return $matches[0];
++            }
++
++            if ($invertCondition) {
++                $jsCondition = '!('.$jsCondition.')';
++            }
++
++            return $matches['indent'].'x-bind:'.$targetAttr.'="'
++                .htmlspecialchars($jsCondition, ENT_QUOTES, 'UTF-8').'"';
++        }, $content);
++    }
++
++    /**
++     * Convert an attribute value with Blade expressions into a JavaScript expression.
++     */
++    protected function convertAttributeValueToJs(string $value, string $itemVar): ?string
++    {
++        $segments = [];
++        $offset = 0;
++        $matched = false;
++
++        while (preg_match('/\{\{\s*(.*?)\s*\}\}/', $value, $match, PREG_OFFSET_CAPTURE, $offset)) {
++            $matched = true;
++            $start = $match[0][1];
++
++            $static = substr($value, $offset, $start - $offset);
++            if ($static !== '') {
++                $segments[] = ['type' => 'text', 'value' => $static];
++            }
++
++            $jsExpr = $this->convertPhpExpressionToJs($match[1][0], $itemVar);
++            if ($jsExpr === null) {
++                return null;
++            }
++
++            $segments[] = ['type' => 'expr', 'value' => $jsExpr];
++            $offset = $start + strlen($match[0][0]);
++        }
++
++        $remaining = substr($value, $offset);
++        if ($remaining !== '') {
++            $segments[] = ['type' => 'text', 'value' => $remaining];
++        }
++
++        if (! $matched) {
++            return null;
++        }
++
++        return $this->joinJsSegments($segments);
++    }
++
++    /**
++     * Join static and expression segments into a single JavaScript expression string.
++     */
++    protected function joinJsSegments(array $segments): string
++    {
++        $parts = [];
+ 
+-                // Handle method calls like ->created_at->diffForHumans()
+-                if ($method) {
+-                    return '<span x-text="diffForHumans(' . $itemVar . '.' . $property . ', _now)"></span>';
++        foreach ($segments as $segment) {
++            if ($segment['type'] === 'text') {
++                if ($segment['value'] === '') {
++                    continue;
+                 }
+-                return '<span x-text="' . $itemVar . '.' . $property . '"></span>';
+-            },
+-            $content
+-        );
+ 
+-        return $content;
++                $parts[] = json_encode($segment['value'], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
++            } else {
++                $parts[] = '('.$segment['value'].')';
++            }
++        }
++
++        if (empty($parts)) {
++            return "''";
++        }
++
++        if (count($parts) === 1) {
++            $single = $parts[0];
++            if ($single[0] === '(' && substr($single, -1) === ')') {
++                return substr($single, 1, -1);
++            }
++
++            return $single;
++        }
++
++        return implode(' + ', $parts);
++    }
++
++    /**
++     * Replace Blade echo statements that reference the loop item with Alpine x-text spans.
++     */
++    protected function replaceItemEchoesWithSpans(string $content, string $itemVar): string
++    {
++        $pattern = '/\{\{\s*(.*?)\s*\}\}/';
++        if (! preg_match_all($pattern, $content, $matches, PREG_OFFSET_CAPTURE)) {
++            return $content;
++        }
++
++        $result = '';
++        $lastPos = 0;
++        foreach ($matches[0] as $index => $match) {
++            [$fullMatch, $offset] = $match;
++            $expression = $matches[1][$index][0];
++            $matchLength = strlen($fullMatch);
++
++            $result .= substr($content, $lastPos, $offset - $lastPos);
++
++            if (! str_contains($expression, '$'.$itemVar) || $this->isInsideHtmlAttribute($content, $offset)) {
++                $result .= $fullMatch;
++            } else {
++                $jsExpression = $this->convertPhpExpressionToJs($expression, $itemVar);
++
++                if ($jsExpression === null) {
++                    $result .= $fullMatch;
++                } else {
++                    $result .= '<span x-text="'.htmlspecialchars($jsExpression, ENT_QUOTES, 'UTF-8').'"></span>';
++                }
++            }
++
++            $lastPos = $offset + $matchLength;
++        }
++
++        $result .= substr($content, $lastPos);
++
++        return $result;
++    }
++
++    /**
++     * Convert a PHP expression referencing the loop item into a JavaScript expression.
++     */
++    protected function convertPhpExpressionToJs(string $expression, string $itemVar): ?string
++    {
++        $expression = trim($expression);
++
++        if ($expression === '' || ! str_contains($expression, '$'.$itemVar)) {
++            return null;
++        }
++
++        $expression = $this->convertCarbonHelpersInExpression($expression, $itemVar);
++
++        // Replace property access
++        $expression = str_replace('$'.$itemVar.'->', $itemVar.'.', $expression);
++        $expression = str_replace('$'.$itemVar, $itemVar, $expression);
++        $expression = str_replace('->', '.', $expression);
++
++        // Normalize logical operators
++        $expression = preg_replace('/\band\b/i', '&&', $expression);
++        $expression = preg_replace('/\bor\b/i', '||', $expression);
++
++        // Standardize booleans/null casing
++        $expression = preg_replace('/\btrue\b/i', 'true', $expression);
++        $expression = preg_replace('/\bfalse\b/i', 'false', $expression);
++        $expression = preg_replace('/\bnull\b/i', 'null', $expression);
++
++        return $expression;
++    }
++
++    /**
++     * Convert Carbon helper method chains to their Alpine helper equivalents.
++     */
++    protected function convertCarbonHelpersInExpression(string $expression, string $itemVar): string
++    {
++        $methods = implode('|', [
++            'diffForHumans',
++            'format',
++            'toDateString',
++            'toTimeString',
++            'toDateTimeString',
++            'toFormattedDateString',
++        ]);
++
++        $pattern = '/\$'.$itemVar.'->(\w+)->('.$methods.')\((.*?)\)/';
++
++        return preg_replace_callback($pattern, function ($matches) use ($itemVar) {
++            $field = $matches[1];
++            $method = $matches[2];
++            $arguments = $matches[3];
++
++            $fieldExpression = $itemVar.'.'.$field;
++
++            return $this->convertCarbonMethodCallToJs($method, $fieldExpression, $arguments);
++        }, $expression);
++    }
++
++    /**
++     * Map a Carbon helper call to its Alpine helper equivalent.
++     */
++    protected function convertCarbonMethodCallToJs(string $method, string $fieldExpression, string $arguments): string
++    {
++        $arguments = trim($arguments);
++
++        return match ($method) {
++            'diffForHumans' => "diffForHumans({$fieldExpression}, _now)",
++            'format' => "format({$fieldExpression}, ".($arguments !== '' ? $arguments : "'Y-m-d'").', _now)',
++            'toDateString' => "toDateString({$fieldExpression}, _now)",
++            'toTimeString' => "toTimeString({$fieldExpression}, _now)",
++            'toDateTimeString' => "toDateTimeString({$fieldExpression}, _now)",
++            'toFormattedDateString' => "toFormattedDateString({$fieldExpression}, _now)",
++            default => "{$method}({$fieldExpression})",
++        };
++    }
++
++    protected function isInsideHtmlAttribute(string $content, int $offset): bool
++    {
++        $before = substr($content, 0, $offset);
++        $ltPos = strrpos($before, '<');
++        $gtPos = strrpos($before, '>');
++
++        if ($ltPos === false) {
++            return false;
++        }
++
++        if ($gtPos !== false && $gtPos > $ltPos) {
++            return false;
++        }
++
++        $segment = substr($before, $ltPos);
++        $doubleQuotes = substr_count($segment, '"');
++        $singleQuotes = substr_count($segment, "'");
++
++        return ($doubleQuotes % 2 === 1) || ($singleQuotes % 2 === 1);
++    }
++
++    /**
++     * Build a Livewire fallback call for Alpine methods.
++     */
++    protected function buildLivewireFallbackCall(string $methodName, array $arguments = []): string
++    {
++        if (empty($arguments)) {
++            return "this.callLivewireFallback('{$methodName}');";
++        }
++
++        $argsList = implode(', ', $arguments);
++
++        return "this.callLivewireFallback('{$methodName}', [{$argsList}]);";
+     }
+ 
+     /**
+@@ -970,9 +1298,30 @@ BLADE;
+             'hasItemsBranch_properties' => get_object_vars($hasItemsBranch),
+         ]);
+ 
++        // Check if this @else block contains @foreach that needs transformation
++        // This handles cases where @else contains nested loops
++        if (preg_match('/@foreach\(\s*\$' . preg_quote($this->componentData[$collectionName] ?? 'item', '/') . '\s+as\s+\$(\w+)\)/', $elseContent ?? '', $foreachMatches)) {
++            \Log::info('[Duo] Found @foreach in @else block that needs transformation', [
++                'foreachMatches' => $foreachMatches,
++                'collection' => $collectionName,
++            ]);
++            
++            // Transform @foreach in else content to Alpine
++            $itemVar = $foreachMatches[2][1]; // Get the actual item variable name
++            $transformedElseContent = $this->transformLoopContentToAlpine($elseContent, $itemVar);
++            
++            // Rebuild the else content with transformed @foreach
++            $elseBranch->content = $transformedElseContent;
++            
++            \Log::info('[Duo] Transformed @foreach in @else block', [
++                'originalLength' => strlen($elseContent ?? ''),
++                'transformedLength' => strlen($transformedElseContent),
++            ]);
++        }
++        
+         // Find ALL BLOCK/ENDBLOCK pairs in the rendered HTML
+         preg_match_all('/<!--\[if BLOCK\]><!\[endif\]-->(.*?)<!--\[if ENDBLOCK\]><!\[endif\]-->/s', $html, $allMatches, PREG_OFFSET_CAPTURE | PREG_SET_ORDER);
+-
++        
+         \Log::info('[Duo] BLOCK marker analysis', [
+             'totalBlocks' => count($allMatches),
+             'htmlLength' => strlen($html),
+@@ -1778,6 +2127,11 @@ BLADE;
+             return $this->generateUpdateMethod($methodName, $paramNames, $paramTypes);
+         }
+ 
++        if (str_starts_with($methodName, 'toggle')) {
++            $paramTypes = $methodInfo['paramTypes'] ?? [];
++            return $this->generateToggleMethod($methodName, $paramNames, $paramTypes);
++        }
++
+         if (str_starts_with($methodName, 'delete') || str_starts_with($methodName, 'destroy')) {
+             $paramTypes = $methodInfo['paramTypes'] ?? [];
+             return $this->generateDeleteMethod($methodName, $paramNames, $paramTypes);
+@@ -1796,18 +2150,20 @@ BLADE;
+         }
+         
+         if ($hasModelParam && !empty($paramNames)) {
++            $fallbackCall = $this->buildLivewireFallbackCall($methodName, $paramNames);
+             // For methods with model parameters, try to handle generically
+             return "async {$methodName}({$paramString}) {
+-                if (!window.duo) {
+-                    console.error('[Duo] Duo client not initialized');
++                if (!window.duo || !window.duo.getDatabase()) {
++                    {$fallbackCall}
+                     return;
+                 }
+                 
+-                console.warn('[Duo] Method {$methodName} requires custom implementation for offline use');
+-                // Fallback: try to call original Livewire method when online
++                console.warn('[Duo] Method {$methodName} requires custom offline implementation');
++                
+                 if (navigator.onLine) {
+-                    // This would require Livewire integration - for now just log
+-                    console.log('[Duo] Would call Livewire method:', '{$methodName}', arguments);
++                    {$fallbackCall}
++                } else {
++                    console.warn('[Duo] Offline - unable to call Livewire fallback for {$methodName}');
+                 }
+             }";
+         } else {
+@@ -1826,6 +2182,7 @@ BLADE;
+         // Detect the model from the method name (e.g., createTodo -> Todo)
+         $modelName = $this->extractModelFromMethodName($methodName);
+         $storeName = $this->getStoreName($modelName);
++        $fallbackCall = $this->buildLivewireFallbackCall($methodName);
+ 
+         // Detect which timestamp fields the model uses by checking existing records
+         $timestampFields = $this->detectModelTimestampFields($modelName);
+@@ -1884,19 +2241,22 @@ BLADE;
+ 
+         return "async {$methodName}() {
+             if (!window.duo) {
+-                console.error('[Duo] Duo client not initialized');
++                console.warn('[Duo] Duo client not initialized - calling Livewire fallback');
++                {$fallbackCall}
+                 return;
+             }
+ 
+             const db = window.duo.getDatabase();
+             if (!db) {
+                 console.error('[Duo] Database not initialized');
++                {$fallbackCall}
+                 return;
+             }
+ 
+             const store = db.getStore('{$storeName}');
+             if (!store) {
+                 console.error('[Duo] Store not found: {$storeName}');
++                {$fallbackCall}
+                 return;
+             }
+ 
+@@ -1962,6 +2322,7 @@ BLADE;
+                 // UI will auto-update via liveQuery (no manual sync needed)
+             } catch (err) {
+                 console.error('[Duo] Failed to create record:', err);
++                {$fallbackCall}
+             }
+         }";
+     }
+@@ -1974,6 +2335,7 @@ BLADE;
+         $modelName = $this->extractModelFromMethodName($methodName);
+         $storeName = $this->getStoreName($modelName);
+         $recordParam = (!empty($paramNames)) ? $paramNames[0] : 'record';
++        $fallbackCall = $this->buildLivewireFallbackCall($methodName, [$recordParam]);
+         
+         // Check if first parameter is a model (route model binding)
+         $isModelParameter = false;
+@@ -1983,19 +2345,22 @@ BLADE;
+ 
+         return "async {$methodName}({$recordParam}) {
+             if (!window.duo) {
+-                console.error('[Duo] Duo client not initialized');
++                console.warn('[Duo] Duo client not initialized - calling Livewire fallback');
++                {$fallbackCall}
+                 return;
+             }
+ 
+             const db = window.duo.getDatabase();
+             if (!db) {
+                 console.error('[Duo] Database not initialized');
++                {$fallbackCall}
+                 return;
+             }
+ 
+             const store = db.getStore('{$storeName}');
+             if (!store) {
+                 console.error('[Duo] Store not found: {$storeName}');
++                {$fallbackCall}
+                 return;
+             }
+ 
+@@ -2008,6 +2373,7 @@ BLADE;
+                     recordToUpdate = await store.get({$recordParam});
+                     if (!recordToUpdate) {
+                         console.error('[Duo] Record not found:', {$recordParam});
++                        {$fallbackCall}
+                         return;
+                     }
+                 } else {
+@@ -2038,6 +2404,86 @@ BLADE;
+                 // UI will auto-update via liveQuery (no manual sync needed)
+             } catch (err) {
+                 console.error('[Duo] Failed to update record:', err);
++                {$fallbackCall}
++            }
++        }";
++    }
++
++    /**
++     * Generate a toggle method (common Livewire pattern)
++     */
++    protected function generateToggleMethod(string $methodName, array $paramNames, array $paramTypes = []): string
++    {
++        $modelName = $this->extractModelFromMethodName($methodName);
++        $storeName = $this->getStoreName($modelName);
++        $recordParam = (!empty($paramNames)) ? $paramNames[0] : 'record';
++        $collectionProperty = $this->guessCollectionProperty($modelName);
++        $toggleField = $this->guessToggleField($collectionProperty);
++        $fallbackCall = $this->buildLivewireFallbackCall($methodName, ['recordId']);
++
++        return "async {$methodName}({$recordParam}) {
++            const recordId = typeof {$recordParam} === 'object' ? {$recordParam}.id : {$recordParam};
++            if (!recordId) {
++                console.warn('[Duo] {$methodName} called without a valid identifier');
++            }
++
++            if (Array.isArray(this.{$collectionProperty})) {
++                this.{$collectionProperty} = this.{$collectionProperty}.map(item => {
++                    if (item.id === recordId) {
++                        return { ...item, {$toggleField}: !item.{$toggleField} };
++                    }
++                    return item;
++                });
++            }
++
++            if (!window.duo) {
++                console.warn('[Duo] Duo client not initialized - calling Livewire fallback');
++                {$fallbackCall}
++                return;
++            }
++
++            const db = window.duo.getDatabase();
++            if (!db) {
++                console.error('[Duo] Database not initialized');
++                {$fallbackCall}
++                return;
++            }
++
++            const store = db.getStore('{$storeName}');
++            if (!store) {
++                console.error('[Duo] Store not found: {$storeName}');
++                {$fallbackCall}
++                return;
++            }
++
++            try {
++                const existingRecord = await store.get(recordId);
++                const currentValue = existingRecord ? !!existingRecord.{$toggleField} : undefined;
++                const updatedRecord = {
++                    ...(existingRecord || { id: recordId }),
++                    {$toggleField}: currentValue === undefined ? true : !currentValue,
++                    _duo_pending_sync: true,
++                    _duo_operation: 'update'
++                };
++
++                await store.put(updatedRecord);
++
++                const syncQueue = window.duo.getSyncQueue();
++                if (syncQueue) {
++                    await syncQueue.enqueue({
++                        storeName: '{$storeName}',
++                        operation: 'update',
++                        data: updatedRecord
++                    });
++                }
++            } catch (err) {
++                console.error('[Duo] Failed to toggle record:', err);
++            }
++
++            if (navigator.onLine) {
++                {$fallbackCall}
++            } else {
++                console.warn('[Duo] Offline - {$methodName} will sync when connection is restored');
+             }
+         }";
+     }
+@@ -2050,6 +2496,7 @@ BLADE;
+         $modelName = $this->extractModelFromMethodName($methodName);
+         $storeName = $this->getStoreName($modelName);
+         $recordParam = (!empty($paramNames)) ? $paramNames[0] : 'record';
++        $fallbackCall = $this->buildLivewireFallbackCall($methodName, [$recordParam]);
+         
+         // Check if first parameter is a model (route model binding)
+         $isModelParameter = false;
+@@ -2059,19 +2506,22 @@ BLADE;
+ 
+         return "async {$methodName}({$recordParam}) {
+             if (!window.duo) {
+-                console.error('[Duo] Duo client not initialized');
++                console.warn('[Duo] Duo client not initialized - calling Livewire fallback');
++                {$fallbackCall}
+                 return;
+             }
+ 
+             const db = window.duo.getDatabase();
+             if (!db) {
+                 console.error('[Duo] Database not initialized');
++                {$fallbackCall}
+                 return;
+             }
+ 
+             const store = db.getStore('{$storeName}');
+             if (!store) {
+                 console.error('[Duo] Store not found: {$storeName}');
++                {$fallbackCall}
+                 return;
+             }
+ 
+@@ -2082,6 +2532,7 @@ BLADE;
+                 const existingRecord = await store.get(recordId);
+                 if (!existingRecord) {
+                     console.warn('[Duo] Record not found for deletion:', recordId);
++                    {$fallbackCall}
+                     return;
+                 }
+ 
+@@ -2108,6 +2559,7 @@ BLADE;
+                 // UI will auto-update via liveQuery (no manual sync needed)
+             } catch (err) {
+                 console.error('[Duo] Failed to delete record:', err);
++                {$fallbackCall}
+             }
+         }";
+     }
+@@ -2162,6 +2614,81 @@ BLADE;
+         return ucfirst($name);
+     }
+ 
++    /**
++     * Guess the component property that holds the model collection.
++     */
++    protected function guessCollectionProperty(string $modelName): string
++    {
++        $default = strtolower($modelName).'s';
++
++        if (array_key_exists($default, $this->componentData)) {
++            return $default;
++        }
++
++        foreach ($this->componentData as $key => $value) {
++            if (! $this->isCollection($value) && ! is_array($value)) {
++                continue;
++            }
++
++            if (stripos($key, $modelName) !== false || stripos($key, $default) !== false) {
++                return $key;
++            }
++        }
++
++        return $default;
++    }
++
++    /**
++     * Guess which field should be toggled (completed, active, etc.)
++     */
++    protected function guessToggleField(string $collectionProperty): string
++    {
++        $candidates = ['completed', 'is_completed', 'active', 'is_active', 'enabled', 'checked', 'done'];
++        $collection = $this->componentData[$collectionProperty] ?? null;
++        $items = $this->collectionToArray($collection);
++        $first = $items[0] ?? null;
++
++        if (is_object($first)) {
++            $first = (array) $first;
++        }
++
++        if (is_array($first)) {
++            foreach ($candidates as $candidate) {
++                if (array_key_exists($candidate, $first)) {
++                    return $candidate;
++                }
++            }
++
++            foreach ($first as $key => $value) {
++                if (is_bool($value)) {
++                    return $key;
++                }
++            }
++        }
++
++        return 'completed';
++    }
++
++    /**
++     * Normalize collections/arrays for inspection.
++     */
++    protected function collectionToArray($value): array
++    {
++        if ($value instanceof \Illuminate\Support\Collection) {
++            return $value->toArray();
++        }
++
++        if (is_object($value) && method_exists($value, 'toArray')) {
++            return $value->toArray();
++        }
++
++        if (is_array($value)) {
++            return $value;
++        }
++
++        return [];
++    }
++
+     /**
+      * Get IndexedDB store name from model name
+      */
+@@ -2276,6 +2803,9 @@ BLADE;
+         // Generate timestamp refresh method for reactive timestamps
+         $methods['setupTimestampRefresh'] = $this->generateSetupTimestampRefreshMethod();
+ 
++        // Helper to call original Livewire methods when needed
++        $methods['callLivewireFallback'] = $this->generateLivewireFallbackHelperMethod();
++
+         // Generate date formatting helpers (for Carbon-style methods)
+         $methods['diffForHumans'] = $this->generateDiffForHumansMethod();
+         $methods['format'] = $this->generateFormatDateMethod();
+@@ -2290,6 +2820,23 @@ BLADE;
+         return $methods;
+     }
+ 
++    protected function generateLivewireFallbackHelperMethod(): string
++    {
++        return <<<'JS'
++callLivewireFallback(methodName, params = []) {
++    if (this.$wire && typeof this.$wire.call === 'function') {
++        try {
++            this.$wire.call(methodName, ...params);
++        } catch (error) {
++            console.error('[Duo] Failed to call Livewire fallback for', methodName, error);
++        }
++    } else {
++        console.warn('[Duo] $wire is not available to call fallback for', methodName);
++    }
++}
++JS;
++    }
++
+     /**
+      * Generate diffForHumans method for Carbon-style date formatting
+      */
+@@ -2652,62 +3199,71 @@ JS;
+      */
+     protected function generateInitMethod(): string
+     {
+-        return "async init() {
+-            const debug = this._duoConfig?.debug || false;
++        return <<<'JS'
++async init() {
++    const rootEl = this.$root || this.$el || document.querySelector('[data-duo-enabled="true"]');
++    const livewireRoot = rootEl ? rootEl.closest('[wire\\:id]') : null;
++    if (livewireRoot && livewireRoot.__livewire) {
++        this.$wire = livewireRoot.__livewire;
++        this.$wireId = livewireRoot.getAttribute('wire:id');
++    }
+ 
+-            if (debug) console.log('[Duo] Initializing component with Duo...', this._duoConfig);
++    const debug = this._duoConfig?.debug || false;
+ 
+-            // Wait for Duo client to be ready
+-            if (!window.duo) {
+-                if (debug) console.warn('[Duo] Duo client not found, waiting...');
+-                await new Promise(resolve => {
+-                    const checkDuo = setInterval(() => {
+-                        if (window.duo) {
+-                            clearInterval(checkDuo);
+-                            resolve();
+-                        }
+-                    }, 100);
++    if (debug) console.log('[Duo] Initializing component with Duo...', this._duoConfig);
+ 
+-                    // Timeout after 5 seconds
+-                    setTimeout(() => {
+-                        clearInterval(checkDuo);
+-                        resolve();
+-                    }, 5000);
+-                });
+-            }
++    // Wait for Duo client to be ready
++    if (!window.duo) {
++        if (debug) console.warn('[Duo] Duo client not found, waiting...');
++        await new Promise(resolve => {
++            const checkDuo = setInterval(() => {
++                if (window.duo) {
++                    clearInterval(checkDuo);
++                    resolve();
++                }
++            }, 100);
++
++            // Timeout after 5 seconds
++            setTimeout(() => {
++                clearInterval(checkDuo);
++                resolve();
++            }, 5000);
++        });
++    }
+ 
+-            if (!window.duo) {
+-                console.error('[Duo] Duo client not available after timeout');
+-                this.duoLoading = false;
+-                return;
+-            }
++    if (!window.duo) {
++        console.error('[Duo] Duo client not available after timeout');
++        this.duoLoading = false;
++        return;
++    }
+ 
+-            try {
+-                // Sync server data to IndexedDB
+-                await this.syncServerToIndexedDB();
++    try {
++        // Sync server data to IndexedDB
++        await this.syncServerToIndexedDB();
+ 
+-                // Load data from IndexedDB to Alpine state
+-                await this.duoSync();
++        // Load data from IndexedDB to Alpine state
++        await this.duoSync();
+ 
+-                // Set up liveQuery for real-time multi-tab sync
+-                this.setupLiveQuery();
++        // Set up liveQuery for real-time multi-tab sync
++        this.setupLiveQuery();
+ 
+-                // Set up timestamp refresh timer
+-                this.setupTimestampRefresh();
++        // Set up timestamp refresh timer
++        this.setupTimestampRefresh();
+ 
+-                // Mark as ready
+-                this.duoLoading = false;
+-                this.duoReady = true;
++        // Mark as ready
++        this.duoLoading = false;
++        this.duoReady = true;
+ 
+-                // Dispatch event for nested components
+-                document.dispatchEvent(new CustomEvent('duo-ready'));
++        // Dispatch event for nested components
++        document.dispatchEvent(new CustomEvent('duo-ready'));
+ 
+-                if (debug) console.log('[Duo] Component initialized and ready');
+-            } catch (err) {
+-                console.error('[Duo] Failed to initialize component:', err);
+-                this.duoLoading = false;
+-            }
+-        }";
++        if (debug) console.log('[Duo] Component initialized and ready');
++    } catch (err) {
++        console.error('[Duo] Failed to initialize component:', err);
++        this.duoLoading = false;
++    }
++}
++JS;
+     }
+ 
+     /**
+diff --git a/src/DuoServiceProvider.php b/src/DuoServiceProvider.php
+index 259bb13..1d07a4a 100644
+--- a/src/DuoServiceProvider.php
++++ b/src/DuoServiceProvider.php
+@@ -162,7 +162,9 @@ final class DuoServiceProvider extends ServiceProvider
+             }
+ 
+             // Check if component uses WithDuo trait
+-            if (! in_array(\JoshCirre\Duo\WithDuo::class, class_uses_recursive($component))) {
++            // Handle both with and without leading backslash for different PHP versions
++            $withDuoClass = 'JoshCirre\Duo\WithDuo';
++            if (! in_array($withDuoClass, class_uses_recursive($component))) {
+                 \Log::info('[Duo] Component does NOT use WithDuo trait');
+ 
+                 return null;
+@@ -214,11 +216,13 @@ final class DuoServiceProvider extends ServiceProvider
+             ]);
+ 
+             // Transform the Blade source (add x-show wrappers for @if/@else)
++            $componentMethods = $this->getComponentMethods($component);
++
+             $transformer = new \JoshCirre\Duo\BladeToAlpineTransformer(
+                 $bladeSource,
+                 null, // No rendered HTML yet
+                 $allData,
+-                [],
++                $componentMethods,
+                 $component,
+                 null
+             );
+@@ -230,7 +234,7 @@ final class DuoServiceProvider extends ServiceProvider
+             ]);
+ 
+             // Return a finisher callback that renders the transformed Blade and does HTML transformations
+-            return function ($html, $replaceHtml = null, $viewContext = null) use ($transformedBlade, $allData, $component, $orderByInfo) {
++            return function ($html, $replaceHtml = null, $viewContext = null) use ($transformedBlade, $allData, $component, $orderByInfo, $componentMethods) {
+                 \Log::info('[Duo] Finisher callback - rendering transformed Blade');
+ 
+                 try {
+@@ -244,8 +248,6 @@ final class DuoServiceProvider extends ServiceProvider
+                     ]);
+ 
+                     // Now do HTML-level transformations (wire:model, loops, etc.)
+-                    $componentMethods = $this->getComponentMethods($component);
+-
+                     $transformer = new \JoshCirre\Duo\BladeToAlpineTransformer(
+                         $transformedBlade,
+                         $renderedHtml,
+diff --git a/tests/Unit/BladeToAlpineTransformerTest.php b/tests/Unit/BladeToAlpineTransformerTest.php
+new file mode 100644
+index 0000000..9f1c3ba
+--- /dev/null
++++ b/tests/Unit/BladeToAlpineTransformerTest.php
+@@ -0,0 +1,47 @@
++<?php
++
++declare(strict_types=1);
++
++use JoshCirre\Duo\BladeToAlpineTransformer;
++
++it('converts loop attribute expressions to alpine bindings', function () {
++    $blade = <<<'BLADE'
++<div>
++    @foreach($this->todos as $todo)
++        <div
++            class="font-medium {{ $todo->completed ? 'line-through text-zinc-500' : '' }}"
++        >
++            {{ $todo->completed ? 'checked' : '' }}
++            {{ $todo->title }}
++        </div>
++    @endforeach
++</div>
++BLADE;
++
++    $componentData = [
++        'todos' => collect([
++            (object) [
++                'id' => 1,
++                'title' => 'Example',
++                'completed' => true,
++                'created_at' => now()->toDateTimeString(),
++            ],
++        ]),
++    ];
++
++    $transformer = new BladeToAlpineTransformer(
++        $blade,
++        null,
++        $componentData,
++        [],
++        new class {}
++    );
++
++    $transformed = $transformer->transformBladeSource();
++
++    expect($transformed)->toContain('<template x-for="todo in todos" :key="todo.id">');
++    expect($transformed)->toContain('x-bind:class="');
++    expect($transformed)->toContain('x-bind:checked="');
++    expect($transformed)->toContain('x-bind:checked="todo.completed"');
++    expect($transformed)->not->toContain('$todo');
++});

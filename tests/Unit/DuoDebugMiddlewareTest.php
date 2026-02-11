@@ -6,6 +6,7 @@ use Illuminate\Http\Request;
 use JoshCirre\Duo\Http\Middleware\DuoDebugMiddleware;
 
 test('middleware sets transformations enabled by default', function () {
+    app()->detectEnvironment(fn () => 'local');
     $middleware = new DuoDebugMiddleware;
     $request = Request::create('/test');
 
@@ -18,6 +19,7 @@ test('middleware sets transformations enabled by default', function () {
 });
 
 test('middleware disables transformations with duo=off query parameter', function () {
+    app()->detectEnvironment(fn () => 'local');
     $middleware = new DuoDebugMiddleware;
     $request = Request::create('/test?duo=off');
 
@@ -30,6 +32,7 @@ test('middleware disables transformations with duo=off query parameter', functio
 });
 
 test('middleware enables transformations with duo=on query parameter', function () {
+    app()->detectEnvironment(fn () => 'local');
     $middleware = new DuoDebugMiddleware;
     $request = Request::create('/test?duo=on');
 
@@ -42,13 +45,12 @@ test('middleware enables transformations with duo=on query parameter', function 
 });
 
 test('middleware only runs in local environment', function () {
-    app()['config']->set('app.env', 'production');
+    app()->detectEnvironment(fn () => 'production');
 
     $middleware = new DuoDebugMiddleware;
     $request = Request::create('/test?duo=off');
 
     $middleware->handle($request, function ($req) {
-        // In production, the middleware shouldn't set anything
         expect(app()->bound('duo.transformations.enabled'))->toBeFalse();
 
         return response('ok');
@@ -56,6 +58,7 @@ test('middleware only runs in local environment', function () {
 });
 
 test('middleware treats any value other than off as enabled', function () {
+    app()->detectEnvironment(fn () => 'local');
     $middleware = new DuoDebugMiddleware;
     $request = Request::create('/test?duo=somethingelse');
 

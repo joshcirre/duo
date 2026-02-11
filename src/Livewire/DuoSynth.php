@@ -4,43 +4,64 @@ declare(strict_types=1);
 
 namespace JoshCirre\Duo\Livewire;
 
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Collection;
+use JoshCirre\Duo\DuoServiceProvider;
+use JoshCirre\Duo\Syncable;
+use JoshCirre\Duo\WithDuo;
 use Livewire\ComponentHook;
 
-/**
- * Livewire component hook to enable Duo functionality.
- */
 class DuoSynth extends ComponentHook
 {
-    public function mount()
+    public function dehydrate($context): void
     {
-        // Check if component uses Duo trait
-        if (method_exists($this->component, 'usesDuo') && $this->component->usesDuo()) {
-            // Add Duo metadata to the component
-            $this->component->js([
-                'duo' => true,
-                'duoModel' => $this->component->getDuoModelClass() ?? null,
-            ]);
+        if (! in_array(WithDuo::class, class_uses_recursive($this->component))) {
+            return;
         }
+
+        $provider = app(DuoServiceProvider::class);
+        $meta = $provider->extractDuoMetadata($this->component);
+
+        $state = [];
+        foreach ($meta['models'] as $name => $info) {
+            try {
+                $value = $this->component->{$name} ?? null;
+            } catch (\Throwable) {
+                continue;
+            }
+
+            if ($value instanceof Collection) {
+                $state[$name] = $value->map(function ($model) {
+                    if ($model instanceof Model && in_array(Syncable::class, class_uses_recursive($model))) {
+                        return $this->modelToDuoArray($model);
+                    }
+                    return $model instanceof Model ? $model->toArray() : $model;
+                })->values()->all();
+            } elseif ($value instanceof Model) {
+                if (in_array(Syncable::class, class_uses_recursive($value))) {
+                    $state[$name] = [$this->modelToDuoArray($value)];
+                } else {
+                    $state[$name] = [$value->toArray()];
+                }
+            } elseif (is_array($value)) {
+                $state[$name] = $value;
+            }
+        }
+
+        $context->addEffect('duo', [
+            'enabled' => true,
+            'meta' => $meta,
+            'state' => $state,
+        ]);
     }
 
-    public function render($view, $data)
+    /**
+     * @param  Model  $model  A model instance that uses the Syncable trait
+     * @return array<string, mixed>
+     */
+    private function modelToDuoArray(Model $model): array
     {
-        if (method_exists($this->component, 'usesDuo') && $this->component->usesDuo()) {
-            // Add wire:duo attribute to the root element
-            $data['duoEnabled'] = true;
-        }
-
-        return $data;
-    }
-
-    public function dehydrate($context)
-    {
-        if (method_exists($this->component, 'usesDuo') && $this->component->usesDuo()) {
-            // Add Duo metadata to component response
-            $context->addEffect('duo', [
-                'enabled' => true,
-                'model' => $this->component->getDuoModelClass() ?? null,
-            ]);
-        }
+        /** @phpstan-ignore-next-line */
+        return $model->toDuoArray();
     }
 }
