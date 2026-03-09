@@ -2,6 +2,7 @@ import { DuoDatabase, type DuoConfig, type DuoRecord } from './core/database';
 import { SyncQueue, type SyncQueueConfig } from './sync/queue';
 import { ServiceWorkerManager, type ServiceWorkerConfig } from './offline/service-worker-manager';
 import { DuoLivewireInterceptor } from './livewire/duo-interceptor';
+import { DuoDomCompiler } from './compiler/dom-compiler';
 import { liveQuery } from 'dexie';
 
 export interface DuoClientConfig {
@@ -18,6 +19,7 @@ export class DuoClient {
   private syncQueue?: SyncQueue;
   private serviceWorkerManager?: ServiceWorkerManager;
   private interceptor?: DuoLivewireInterceptor;
+  private compiler?: DuoDomCompiler;
   private config: DuoClientConfig;
 
   constructor(config: DuoClientConfig = {}) {
@@ -77,11 +79,17 @@ export class DuoClient {
     this.syncQueue = new SyncQueue(this.db, syncConfig);
     this.syncQueue.start();
 
-    // Initialize the Livewire interceptor for offline support
+    // Initialize the Livewire interceptor for server state caching
     this.interceptor = new DuoLivewireInterceptor(this.db, this.syncQueue, {
       debug: this.config.debug,
     });
     this.interceptor.initialize();
+
+    // Initialize the DOM compiler for client-side Alpine rewriting
+    this.compiler = new DuoDomCompiler(this.db, this.syncQueue, {
+      debug: this.config.debug,
+    });
+    this.compiler.initialize();
 
     // Register service worker for offline page caching
     if (this.config.offline?.enabled !== false) {
@@ -141,6 +149,10 @@ export class DuoClient {
     return this.serviceWorkerManager;
   }
 
+  getCompiler(): DuoDomCompiler | undefined {
+    return this.compiler;
+  }
+
   liveQuery<T>(querier: () => T | Promise<T>) {
     return liveQuery(querier);
   }
@@ -160,6 +172,7 @@ export class DuoClient {
   }
 
   async destroy(): Promise<void> {
+    this.compiler?.destroy();
     this.syncQueue?.stop();
     await this.db?.close();
     await this.serviceWorkerManager?.unregister();
@@ -194,7 +207,7 @@ export function getDuo(): DuoClient | null {
   return duoInstance;
 }
 
-export { DuoDatabase, SyncQueue, DuoLivewireInterceptor };
+export { DuoDatabase, SyncQueue, DuoLivewireInterceptor, DuoDomCompiler };
 export type { DuoConfig, DuoRecord, SyncQueueConfig };
 
 // Helper functions for easy data access

@@ -88,25 +88,24 @@ new class extends Component {
         </form>
     </div>
 
-    <div class="space-y-2">
+    <div class="space-y-2" data-duo-collection="todos" data-duo-key="id">
         @forelse($todos as $todo)
-            <div class="bg-white dark:bg-zinc-800 rounded-xl shadow-sm border border-zinc-200 dark:border-zinc-700 p-4 flex items-start gap-4 hover:border-zinc-300 dark:hover:border-zinc-600 transition">
+            <div data-duo-template wire:key="{{ $todo->id }}" class="bg-white dark:bg-zinc-800 rounded-xl shadow-sm border border-zinc-200 dark:border-zinc-700 p-4 flex items-start gap-4 hover:border-zinc-300 dark:hover:border-zinc-600 transition">
                 <input
                     type="checkbox"
                     wire:click="toggleTodo({{ $todo->id }})"
+                    data-duo-checked="completed"
                     {{ $todo->completed ? 'checked' : '' }}
                     class="mt-0.5 h-4 w-4 rounded border-zinc-300 dark:border-zinc-600 text-blue-600 focus:ring-blue-500 focus:ring-offset-0 cursor-pointer"
                 >
 
                 <div class="flex-1 min-w-0">
-                    <h3 class="text-sm font-medium text-zinc-900 dark:text-white {{ $todo->completed ? 'line-through text-zinc-500 dark:text-zinc-500' : '' }}">
+                    <h3 data-duo-text="title" class="text-sm font-medium text-zinc-900 dark:text-white">
                         {{ $todo->title }}
                     </h3>
-                    @if($todo->description)
-                        <p class="text-sm text-zinc-600 dark:text-zinc-400 mt-0.5 {{ $todo->completed ? 'line-through' : '' }}">
-                            {{ $todo->description }}
-                        </p>
-                    @endif
+                    <p data-duo-text="description" data-duo-show="description" class="text-sm text-zinc-600 dark:text-zinc-400 mt-0.5">
+                        {{ $todo->description }}
+                    </p>
                     <p class="text-xs text-zinc-400 dark:text-zinc-500 mt-1.5">
                         {{ $todo->created_at->diffForHumans() }}
                     </p>
@@ -124,7 +123,7 @@ new class extends Component {
                 </button>
             </div>
         @empty
-            <div class="bg-zinc-50 dark:bg-zinc-800/50 rounded-xl border-2 border-dashed border-zinc-200 dark:border-zinc-700 p-12 text-center">
+            <div data-duo-empty class="bg-zinc-50 dark:bg-zinc-800/50 rounded-xl border-2 border-dashed border-zinc-200 dark:border-zinc-700 p-12 text-center">
                 <svg class="mx-auto h-12 w-12 text-zinc-300 dark:text-zinc-600 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
                 </svg>

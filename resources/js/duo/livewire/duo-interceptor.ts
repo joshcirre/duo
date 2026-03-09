@@ -398,9 +398,18 @@ export class DuoLivewireInterceptor {
 
   /**
    * On page load, hydrate Duo components with data from IndexedDB.
+   * Skipped when the DuoDomCompiler is active (it uses liveQuery for hydration).
    */
   private async hydrateFromCache(): Promise<void> {
     for (const [wireId, meta] of this.componentMeta) {
+      const el = document.querySelector(`[wire\\:id="${wireId}"]`);
+      if (el?.hasAttribute('data-duo-compiled')) {
+        if (this.debug) {
+          console.log(`[Duo] Skipping hydration for compiled component: ${wireId}`);
+        }
+        continue;
+      }
+
       for (const [propName, modelInfo] of Object.entries(meta.models)) {
         const store = this.db.getStore(modelInfo.store);
         if (!store) continue;
@@ -421,7 +430,7 @@ export class DuoLivewireInterceptor {
           }
 
           const component = window.Livewire?.find(wireId);
-          if (component?.$wire) {
+          if (component?.$wire?.$set) {
             component.$wire.$set(propName, active, false);
           }
         } catch (e) {
