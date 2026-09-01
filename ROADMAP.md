@@ -349,7 +349,7 @@ class TodoList extends Component
 ### Architecture Refactor: Queue Livewire Calls Instead of Custom Sync Layer
 Simplify sync mechanism by queuing and replaying actual Livewire method calls instead of maintaining a custom IndexedDB-to-database sync layer.
 
-**Status:** 🔬 Research
+**Status:** ✅ Complete (2026-09) — see `resources/js/duo/sync/action-queue.ts`. The REST layer is removed; optimistic changes roll back when the server does not report the expected operation.
 **Complexity:** Medium
 **Breaking Change:** Yes (internal only, same API surface)
 
@@ -486,9 +486,9 @@ Simply replay all queued Livewire method calls in order! Each method runs on the
 ### Static AST Analysis for Method Detection
 Replace runtime SQL query capture with static PHP Abstract Syntax Tree (AST) analysis.
 
-**Status:** 📋 Planned
+**Status:** 🚧 Partially complete (2026-09) — runtime SQL capture is gone. `DuoServiceProvider::analyzeMethod()` reads the method source with conservative regexes (operation, toggles, `$this->prop` → column mapping, literal defaults) scoped to the `create()/update()/fill()` argument lists. Results only drive optimistic UI; the server's `DuoOperationCollector` is authoritative. A proper PHP-Parser AST pass is still the right long-term move.
 **Complexity:** High
-**Priority:** High (Security & Performance)
+**Priority:** Medium
 
 **Current Approach (Runtime SQL Capture):**
 - Executes component methods with dummy data in rolled-back transactions
@@ -815,15 +815,16 @@ public function addTodo()
 ---
 
 ### Livewire v4 Compatibility
-Ensure compatibility with Livewire v4 when released.
+Ensure compatibility with Livewire v4.
 
-**Status:** ⏳ Waiting
-**Complexity:** Unknown
+**Status:** ✅ Complete (2026-09) — Duo now requires Livewire 4 and is built on its interceptor APIs (`interceptMessage`, `interceptAction`, `interceptRequest`). Single-file components are supported; the workbench demo is one.
+**Complexity:** Medium
 
-- Monitor Livewire v4 development
-- Test against beta releases
-- Update HTML transformation logic if needed
-- Leverage new Livewire features
+Notes for maintainers:
+- Duo's precompiler must register before Livewire's (`wire:key` compilation, morph markers) — done in `booting()`.
+- `Livewire::componentHook(DuoSynth::class)` must also register before `ComponentHookRegistry::boot()` or `dehydrate` never fires on real requests (the test harness hides this).
+- `Livewire.find()`/`getByName()` return `$wire` proxies; `Livewire.all()` returns Component objects.
+- Validation failures *resolve* the action promise in the current build; Duo detects them by the absence of the expected operation in the `duo` effect rather than by promise rejection.
 
 ---
 
@@ -1002,7 +1003,7 @@ The type-safe system makes adding new options straightforward:
 ### Move x-data Addition to Blade Source Level
 Eliminate the HTML transformation phase by adding x-data at the Blade source level.
 
-**Status:** 🚧 In Progress
+**Status:** ✅ Complete (2026-09) — the render hook adds `x-data="duo"` to the component root (wrapping any author-supplied `x-data` as `duo({...})`), and the client registers `Alpine.data('duo', …)` at module load. The client-side DOM compiler is removed.
 **Complexity:** Medium
 
 **Current Approach:**

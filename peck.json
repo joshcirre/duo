@@ -12,7 +12,16 @@
             "tsup",
             "vitest",
             "todos",
-            "cirre"
+            "cirre",
+            "args",
+            "attr",
+            "expr",
+            "fallbacks",
+            "forelse",
+            "livewire",
+            "precompiler",
+            "sfc",
+            "str"
         ],
         "paths": []
     }

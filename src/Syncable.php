@@ -18,6 +18,27 @@ trait Syncable
     {
         // Register this model with Duo when it's first used
         static::registerDuoModel();
+
+        // Register Eloquent event listeners for operation capture.
+        // When the DuoOperationCollector is active (during a Livewire method call),
+        // these events record what actually happened at the database level.
+        static::created(function (Model $model) {
+            if (app()->bound(DuoOperationCollector::class)) {
+                app(DuoOperationCollector::class)->record('create', $model);
+            }
+        });
+
+        static::updated(function (Model $model) {
+            if (app()->bound(DuoOperationCollector::class)) {
+                app(DuoOperationCollector::class)->record('update', $model);
+            }
+        });
+
+        static::deleted(function (Model $model) {
+            if (app()->bound(DuoOperationCollector::class)) {
+                app(DuoOperationCollector::class)->record('delete', $model);
+            }
+        });
     }
 
     /**
@@ -25,12 +46,12 @@ trait Syncable
      */
     protected static function registerDuoModel(): void
     {
-        if (! app()->bound(\JoshCirre\Duo\ModelRegistry::class)) {
+        if (! app()->bound(ModelRegistry::class)) {
             return;
         }
 
-        /** @var \JoshCirre\Duo\ModelRegistry $registry */
-        $registry = app(\JoshCirre\Duo\ModelRegistry::class);
+        /** @var ModelRegistry $registry */
+        $registry = app(ModelRegistry::class);
         $registry->register(static::class);
     }
 
@@ -56,21 +77,5 @@ trait Syncable
         $array['_duo_version'] = $this->{$this->getUpdatedAtColumn()}?->timestamp ?? time();
 
         return $array;
-    }
-
-    /**
-     * Determine if this model should be cached in IndexedDB.
-     */
-    public function shouldSyncToDuo(): bool
-    {
-        return true;
-    }
-
-    /**
-     * Get the Duo sync strategy for this model.
-     */
-    public function getDuoSyncStrategy(): string
-    {
-        return config('duo.sync_strategy', 'write-behind');
     }
 }

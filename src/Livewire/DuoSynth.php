@@ -6,6 +6,7 @@ namespace JoshCirre\Duo\Livewire;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Support\Collection;
+use JoshCirre\Duo\DuoOperationCollector;
 use JoshCirre\Duo\DuoServiceProvider;
 use JoshCirre\Duo\Syncable;
 use JoshCirre\Duo\WithDuo;
@@ -13,11 +14,19 @@ use Livewire\ComponentHook;
 
 class DuoSynth extends ComponentHook
 {
+    /**
+     * Called when serializing the Livewire response.
+     * Drains any Eloquent operations that were captured during this request
+     * and includes them in the effect payload.
+     */
     public function dehydrate($context): void
     {
         if (! in_array(WithDuo::class, class_uses_recursive($this->component))) {
             return;
         }
+
+        // Drain any operations captured by Syncable model events during this request
+        $operations = app(DuoOperationCollector::class)->drain();
 
         $provider = app(DuoServiceProvider::class);
         $meta = $provider->extractDuoMetadata($this->component);
@@ -35,6 +44,7 @@ class DuoSynth extends ComponentHook
                     if ($model instanceof Model && in_array(Syncable::class, class_uses_recursive($model))) {
                         return $this->modelToDuoArray($model);
                     }
+
                     return $model instanceof Model ? $model->toArray() : $model;
                 })->values()->all();
             } elseif ($value instanceof Model) {
@@ -48,11 +58,18 @@ class DuoSynth extends ComponentHook
             }
         }
 
-        $context->addEffect('duo', [
+        $effect = [
             'enabled' => true,
             'meta' => $meta,
             'state' => $state,
-        ]);
+        ];
+
+        // Include captured operations so the client knows exactly what happened
+        if (! empty($operations)) {
+            $effect['operations'] = $operations;
+        }
+
+        $context->addEffect('duo', $effect);
     }
 
     /**

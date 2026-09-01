@@ -1,6 +1,6 @@
 {
   "name": "@joshcirre/vite-plugin-duo",
-  "version": "0.1.7",
+  "version": "0.2.0",
   "description": "Vite plugin for Duo - Local-first IndexedDB syncing for Laravel and Livewire",
   "type": "module",
   "main": "./dist/index.js",
@@ -42,7 +42,9 @@
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
-    "format": "prettier --write \"**/*.{ts,js,json,md}\""
+    "format": "prettier --write \"**/*.{ts,js,json,md}\"",
+    "workbench:build": "vite build --config workbench/vite.config.js",
+    "workbench:dev": "vite --config workbench/vite.config.js"
   },
   "dependencies": {
     "dexie": "^4.0.11",
@@ -57,6 +59,7 @@
     "@typescript-eslint/parser": "^8.20.0",
     "eslint": "^9.29.0",
     "happy-dom": "^18.0.1",
+    "laravel-vite-plugin": "^2.1.0",
     "prettier": "^3.4.2",
     "tsup": "^8.3.5",
     "typescript": "^5.7.2",

@@ -5,85 +5,12 @@ declare(strict_types=1);
 return [
     /*
     |--------------------------------------------------------------------------
-    | Database Name
+    | Debug
     |--------------------------------------------------------------------------
     |
-    | The name of the IndexedDB database that will be created in the browser.
-    |
-    */
-    'database_name' => env('DUO_DATABASE_NAME', 'duo_cache'),
-
-    /*
-    |--------------------------------------------------------------------------
-    | Database Version
-    |--------------------------------------------------------------------------
-    |
-    | The version of the IndexedDB database schema.
-    |
-    */
-    'database_version' => env('DUO_DATABASE_VERSION', 1),
-
-    /*
-    |--------------------------------------------------------------------------
-    | Sync Strategy
-    |--------------------------------------------------------------------------
-    |
-    | Default sync strategy: 'write-behind' or 'write-through'
-    |
-    */
-    'sync_strategy' => env('DUO_SYNC_STRATEGY', 'write-behind'),
-
-    /*
-    |--------------------------------------------------------------------------
-    | Sync Interval
-    |--------------------------------------------------------------------------
-    |
-    | How often (in milliseconds) to attempt syncing pending changes to server.
-    | Set to 0 to disable automatic syncing.
-    |
-    */
-    'sync_interval' => env('DUO_SYNC_INTERVAL', 5000),
-
-    /*
-    |--------------------------------------------------------------------------
-    | Max Retry Attempts
-    |--------------------------------------------------------------------------
-    |
-    | Maximum number of retry attempts for failed sync operations.
-    |
-    */
-    'max_retry_attempts' => env('DUO_MAX_RETRY_ATTEMPTS', 3),
-
-    /*
-    |--------------------------------------------------------------------------
-    | Timestamp Refresh Interval
-    |--------------------------------------------------------------------------
-    |
-    | How often (in milliseconds) to refresh relative timestamps like
-    | "5 minutes ago" in the UI. Set to 0 to disable auto-refresh.
-    | Can be overridden per-component via duoConfig().
-    |
-    */
-    'timestamp_refresh_interval' => env('DUO_TIMESTAMP_REFRESH_INTERVAL', 10000),
-
-    /*
-    |--------------------------------------------------------------------------
-    | Cache TTL
-    |--------------------------------------------------------------------------
-    |
-    | Default time-to-live for cached items (in seconds).
-    | Set to null for no expiration.
-    |
-    */
-    'cache_ttl' => env('DUO_CACHE_TTL', null),
-
-    /*
-    |--------------------------------------------------------------------------
-    | Enable Debug Mode
-    |--------------------------------------------------------------------------
-    |
-    | Enable verbose logging for debugging purposes.
-    | Can be overridden per-component via duoConfig().
+    | Reserved for server-side debug logging. Client-side logging is controlled
+    | by the `debug` option passed to initializeDuo() (the Vite plugin passes
+    | import.meta.env.DEV).
     |
     */
     'debug' => env('DUO_DEBUG', false),
@@ -93,8 +20,8 @@ return [
     | Auto-discover Models
     |--------------------------------------------------------------------------
     |
-    | Automatically scan for models using the Duo trait and generate
-    | appropriate IndexedDB stores.
+    | Scan the paths below for models using the Syncable trait so their
+    | IndexedDB stores are known without registering them manually.
     |
     */
     'auto_discover' => env('DUO_AUTO_DISCOVER', true),
@@ -116,18 +43,18 @@ return [
     | Sync Status Component
     |--------------------------------------------------------------------------
     |
-    | Configuration for the <x-duo::sync-status /> component.
+    | Defaults for the <x-duo::sync-status /> component. Component props
+    | override these values.
     |
     */
     'sync_status' => [
-        // Delay (in milliseconds) before showing sync indicator
-        // Only show if syncing takes longer than this value (prevents flash for fast syncs)
+        // Only show the "Syncing" badge if syncing takes longer than this (ms)
         'show_delay' => env('DUO_SYNC_STATUS_DELAY', 1000),
 
-        // Show "All changes synced" message after successful sync
+        // Show an "All changes synced" badge after a successful sync
         'show_success' => env('DUO_SYNC_STATUS_SHOW_SUCCESS', false),
 
-        // Duration (in milliseconds) to show success message before fading
+        // How long the success badge stays visible (ms)
         'success_duration' => env('DUO_SYNC_STATUS_SUCCESS_DURATION', 2000),
     ],
 ];

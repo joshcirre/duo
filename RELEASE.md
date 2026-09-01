@@ -1,120 +1,49 @@
-# Release Notes - v0.1.0
+# Release Notes - v0.2.0
 
-**Release Tag:** `v0.1.0`
+**Release Tag:** `v0.2.0`
 
 **Release Title:**
 ```
-🎉 Duo v0.1.0 - First Public Release
+Duo v0.2.0 - Livewire 4, real offline, no REST layer
 ```
 
 ---
 
-## GitHub Release Notes (copy below)
+## GitHub Release Notes
 
 ```markdown
-# Duo v0.1.0 - Local-First Syncing for Laravel & Livewire
+# Duo v0.2.0 — Livewire 4, real offline, no REST layer
 
-First public release of Duo - a local-first IndexedDB syncing package for Laravel and Livewire applications.
+Duo is local-first Livewire: your component reads from IndexedDB, applies changes optimistically, and keeps working offline — while your own Livewire methods remain the only thing that writes to your database.
 
-## 📦 Package Information
+This release is a rewrite of the sync architecture and drops Livewire 3. **Upgrade both packages together:**
 
-This release includes:
-- **Composer Package:** `joshcirre/duo` - Laravel service provider and traits
-- **NPM Package:** `@joshcirre/vite-plugin-duo` - Vite plugin and client library
+- Composer: `joshcirre/duo` `^0.2`
+- NPM: `@joshcirre/vite-plugin-duo` `^0.2`
 
-## ✨ Features
+## What changed
 
-### Core Functionality
-- 🔄 **Automatic IndexedDB Syncing** - Transparent client-side caching of Eloquent models
-- ⚡ **Optimistic Updates** - Instant UI updates with background server synchronization
-- 📡 **Offline Support** - Automatic offline detection with sync queue that resumes when back online
-- 🎯 **Livewire Integration** - Seamless integration with Livewire 3+ and Volt components
-- 🚀 **Zero Configuration** - Add one trait and Duo handles the rest
+- **Livewire 4 only.** Class-based and single-file components. Laravel 12.
+- **Writes go through your Livewire methods.** No more `/api/duo/{table}` endpoints. Duo writes an optimistic record, then calls your real `$wire` method; the server reports the Eloquent operations that ran and the client reconciles. Validation, policies, and events work exactly as in plain Livewire.
+- **Optimistic changes roll back** when the server did not perform them — a failed validation removes the temp row while Livewire renders the error.
+- **Offline actions are queued** (localStorage) and replayed through `$wire` when you're back online, including after a reload.
+- **Offline page loads work:** with `@duoMeta` in your layout, the service worker caches visited pages and the component boots from IndexedDB with no network.
+- The Alpine `duo` scope is added server-side, so there is no client-side DOM rewriting and no "duo is not defined" race.
+- Method analysis detects toggles, `$this->prop → column` mappings, and literal defaults for accurate optimistic rendering.
 
-### Full Page Caching
-- 💾 **Offline Page Caching** - Complete page caching with service workers
-- 🔧 **Dynamic Service Worker** - No publishing needed, served automatically from package
-- 🔒 **CSRF Protection** - `@duoMeta` directive includes CSRF token automatically
-- 🖼️ **Asset Caching** - Caches HTML, CSS, JS, images, and fonts for true offline mode
+## Verified in a real browser
 
-### Developer Experience
-- 📊 **Visual Sync Status** - Built-in component showing online/offline/syncing states
-- 📦 **Type-Safe** - Full TypeScript support with auto-generated types
-- 🔌 **Vite Plugin** - Automatic manifest generation with file watching
-- ⚡ **Auto-Injection** - No manual initialization needed in your app.js
-- 🧪 **Workbench Demo** - Fully functional todo list demo included
+Against the workbench demo in headless Chromium: optimistic create/toggle/delete, validation rollback with Livewire-rendered errors, offline queue + replay, recovery from a killed server, replay of a previous session's queue on load, and a full page load with the server down.
 
-## 📚 Installation
+## Upgrading from 0.1.x
 
-### Composer
-```bash
-composer require joshcirre/duo
-```
+1. `composer require joshcirre/duo:^0.2` and `npm install -D @joshcirre/vite-plugin-duo@^0.2`
+2. Requires `livewire/livewire ^4.0`.
+3. Add `data-duo-*` markers to the lists you want rendered from IndexedDB (see the README). Components with `WithDuo` alone still get page caching and offline action replay.
+4. Remove any code that called `/api/duo/*` or `window.duo.getSyncQueue()` (still present as an alias for the action queue).
+5. Clear browsers' IndexedDB once (`<x-duo::debug />` → Delete Database) if you were running 0.1.x locally.
 
-### NPM
-```bash
-npm install -D @joshcirre/vite-plugin-duo
-```
+See the [CHANGELOG](https://github.com/joshcirre/duo/blob/main/CHANGELOG.md) for the full list, and the [README](https://github.com/joshcirre/duo/blob/main/README.md) for the marker reference and known limitations.
 
-## 🚀 Quick Start
-
-1. Add the `Syncable` trait to your models:
-```php
-use JoshCirre\Duo\Syncable;
-
-class Todo extends Model
-{
-    use Syncable;
-}
-```
-
-2. Add the `WithDuo` trait to your Livewire/Volt components:
-```php
-use JoshCirre\Duo\WithDuo;
-
-new class extends Component {
-    use WithDuo;
-    // ...
-}
-```
-
-3. Add `@duoMeta` to your layout:
-```blade
-<head>
-    @vite(['resources/css/app.css', 'resources/js/app.js'])
-    @duoMeta
-</head>
-```
-
-4. Configure Vite:
-```js
-import duo from '@joshcirre/vite-plugin-duo';
-
-export default defineConfig({
-    plugins: [duo()],
-});
-```
-
-That's it! Your app now has local-first syncing with offline support. The Vite plugin automatically injects the initialization code - no manual setup needed in your `app.js`!
-
-## 📖 Documentation
-
-- [README](https://github.com/joshcirre/duo/blob/main/README.md)
-- [Roadmap](https://github.com/joshcirre/duo/blob/main/ROADMAP.md)
-
-## 🙏 Acknowledgments
-
-Built with:
-- Laravel
-- Livewire
-- Dexie.js
-- Vite
-
-## 📄 License
-
-MIT License - see [LICENSE](https://github.com/joshcirre/duo/blob/main/LICENSE) for details.
-
----
-
-**Note:** This is a 0.x release, meaning the API may change before 1.0. Please report any issues on [GitHub](https://github.com/joshcirre/duo/issues).
+**Note:** 0.x — the marker vocabulary and JavaScript API may still change.
 ```

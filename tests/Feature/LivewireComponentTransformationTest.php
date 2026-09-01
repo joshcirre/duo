@@ -2,6 +2,7 @@
 
 declare(strict_types=1);
 
+use JoshCirre\Duo\DuoServiceProvider;
 use Livewire\Livewire;
 use Tests\Fixtures\Livewire\TodoList;
 use Tests\Fixtures\Models\Todo;
@@ -33,7 +34,7 @@ test('component adds data-duo-meta attribute with component name', function () {
     $html = $component->html();
 
     expect($html)->toContain('data-duo-meta="');
-    expect($html)->toContain('TodoList');
+    expect($html)->toContain('todo-list');
 });
 
 test('duo metadata includes model info when collection has data', function () {
@@ -45,7 +46,7 @@ test('duo metadata includes model info when collection has data', function () {
 
     $component = Livewire::test(TodoList::class);
     $html = $component->html();
-    
+
     expect($html)->toContain('data-duo-meta="');
     expect($html)->toContain('todos');
 });
@@ -163,7 +164,7 @@ test('collectSyncableModels detects single model instances', function () {
         'completed' => false,
     ]);
 
-    $provider = app(JoshCirre\Duo\DuoServiceProvider::class);
+    $provider = app(DuoServiceProvider::class);
 
     $models = [];
     $reflection = new ReflectionMethod($provider, 'collectSyncableModels');

@@ -34,3 +34,4 @@ coverage/
 /workbench/database/database.sqlite
 /workbench/storage/*
 !/workbench/storage/.gitkeep
+.gstack/

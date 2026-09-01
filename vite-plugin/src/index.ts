@@ -150,6 +150,13 @@ export function duo(options: DuoPluginOptions = {}): Plugin {
 
       server.watcher.on('change', (path) => {
         if (path === resolvedManifestPath) {
+          // Invalidate the virtual module in Vite's module graph
+          // so it re-reads the manifest from disk on next request
+          const mod = server.moduleGraph.getModuleById(RESOLVED_VIRTUAL_MODULE_ID);
+          if (mod) {
+            server.moduleGraph.invalidateModule(mod);
+          }
+
           server.ws.send({
             type: 'full-reload',
             path: '*',
@@ -182,8 +189,6 @@ import manifest from 'virtual:duo-manifest';
 initializeDuo({
   manifest,
   debug: import.meta.env.DEV,
-  syncInterval: 5000,
-  maxRetries: 3,
 }).catch((error) => {
   console.error('[Duo] Initialization failed:', error);
 });

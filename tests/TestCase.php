@@ -6,6 +6,7 @@ namespace Tests;
 
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use JoshCirre\Duo\DuoServiceProvider;
+use Livewire\Livewire;
 use Livewire\LivewireServiceProvider;
 use Orchestra\Testbench\TestCase as Orchestra;
 
@@ -17,7 +18,8 @@ abstract class TestCase extends Orchestra
     {
         parent::setUp();
 
-        // Additional setup
+        // Register fixture single-file components (Livewire 4)
+        Livewire::addLocation(viewPath: __DIR__.'/Fixtures/views/components');
     }
 
     protected function getPackageProviders($app): array

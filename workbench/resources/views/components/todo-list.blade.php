@@ -1,15 +1,18 @@
 <?php
 
-use Livewire\Volt\Component;
-use Workbench\App\Models\Todo;
 use JoshCirre\Duo\WithDuo;
+use Livewire\Attributes\Computed;
+use Livewire\Component;
+use Workbench\App\Models\Todo;
 
 new class extends Component {
     use WithDuo;
+
     public string $newTodoTitle = '';
+
     public string $newTodoDescription = '';
 
-    public function addTodo()
+    public function addTodo(): void
     {
         $this->validate([
             'newTodoTitle' => 'required|min:3',
@@ -24,24 +27,23 @@ new class extends Component {
         $this->reset(['newTodoTitle', 'newTodoDescription']);
     }
 
-    public function toggleTodo($id)
+    public function toggleTodo($id): void
     {
         $todo = Todo::findOrFail($id);
         $todo->update([
-            'completed' => !$todo->completed,
+            'completed' => ! $todo->completed,
         ]);
     }
 
-    public function deleteTodo($id)
+    public function deleteTodo($id): void
     {
         Todo::findOrFail($id)->delete();
     }
 
-    public function with()
+    #[Computed]
+    public function todos()
     {
-        return [
-            'todos' => Todo::latest()->orderBy('id', 'desc')->get(),
-        ];
+        return Todo::latest()->orderBy('id', 'desc')->get();
     }
 }; ?>
 
@@ -89,7 +91,7 @@ new class extends Component {
     </div>
 
     <div class="space-y-2" data-duo-collection="todos" data-duo-key="id">
-        @forelse($todos as $todo)
+        @forelse($this->todos as $todo)
             <div data-duo-template wire:key="{{ $todo->id }}" class="bg-white dark:bg-zinc-800 rounded-xl shadow-sm border border-zinc-200 dark:border-zinc-700 p-4 flex items-start gap-4 hover:border-zinc-300 dark:hover:border-zinc-600 transition">
                 <input
                     type="checkbox"

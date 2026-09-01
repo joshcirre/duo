@@ -228,21 +228,6 @@ final class ModelRegistry
                 'indexes' => $indexes,
                 'timestamps' => $metadata['timestamps'],
                 'schema' => $metadata['schema'], // Include schema with column types
-                // API endpoints for background sync
-                'endpoints' => [
-                    'index' => "/api/duo/{$metadata['table']}",
-                    'show' => "/api/duo/{$metadata['table']}/{id}",
-                    'store' => "/api/duo/{$metadata['table']}",
-                    'update' => "/api/duo/{$metadata['table']}/{id}",
-                    'destroy' => "/api/duo/{$metadata['table']}/{id}",
-                ],
-                // Sync configuration
-                'sync' => [
-                    'enabled' => true,
-                    'batchSize' => 50, // Sync in batches
-                    'retryAttempts' => 3,
-                    'retryDelay' => 1000, // ms
-                ],
             ];
         }
 

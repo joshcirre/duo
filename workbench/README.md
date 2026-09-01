@@ -1,6 +1,7 @@
 # Duo Workbench Demo
 
-This directory contains a working demo of Duo with a todo list application.
+This directory contains a working demo of Duo: a todo list built as a **Livewire 4
+single-file component** with the `WithDuo` trait and `data-duo-*` template markers.
 
 ## Setup
 
@@ -10,45 +11,43 @@ composer install
 npm install
 ```
 
-2. Build the package:
+2. Build the package (client JS + service worker):
 ```bash
 npm run build
 ```
 
-3. Build the workbench:
+3. Build the workbench app (sqlite database, migrations):
 ```bash
-php vendor/bin/testbench workbench:build
+composer run build
+```
+
+4. Build the workbench frontend assets:
+```bash
+npm run workbench:build
 ```
 
 ## Running the Demo
 
 Start the development server:
 ```bash
-composer serve
+php vendor/bin/testbench serve
 ```
 
 Then open your browser to `http://localhost:8000`
 
 ## What's Included
 
-- **Todo Model** (`workbench/app/Models/Todo.php`) - A simple todo model using the `Syncable` trait
-- **TodoList Livewire Component** (`workbench/app/Livewire/TodoList.php`) - Interactive todo list
+- **Todo Model** (`workbench/app/Models/Todo.php`) — uses the `Syncable` trait
+- **TodoList component** (`workbench/resources/views/components/todo-list.blade.php`) —
+  a Livewire 4 single-file component using `WithDuo`, registered via
+  `Livewire::addLocation()` in the `WorkbenchServiceProvider`
 - **Database Migration** (`workbench/database/migrations/2024_01_01_000001_create_todos_table.php`)
-- **Duo Manifest** (`resources/js/duo/manifest.json`) - IndexedDB schema for the Todo model
+- **Duo Manifest** (`resources/js/duo/manifest.json`) — IndexedDB schema for the Todo model
 
 ## How It Works
 
-1. The Todo model uses the `Syncable` trait to enable Duo syncing
-2. When the page loads, Duo initializes and creates an IndexedDB database
-3. All todo operations (create, update, delete) are cached locally in IndexedDB
-4. Changes are automatically synced to the server in the background
-5. The app works offline and syncs when connection is restored
-
-## Testing Offline Behavior
-
-1. Open your browser's DevTools
-2. Go to the Network tab
-3. Set throttling to "Offline"
-4. Try creating, updating, or deleting todos
-5. Changes are saved locally in IndexedDB
-6. Re-enable network to see changes sync to the server
+On render, Duo's Blade precompiler transforms the `data-duo-*` markers and `wire:*`
+attributes into Alpine bindings (`x-for` over IndexedDB data, `duo.call(...)` handlers),
+and `DuoSynth` attaches a `duo` effect to every Livewire response containing the
+component's model state plus the exact Eloquent operations that ran. The client merges
+that into IndexedDB, so reads are instant and the UI keeps working offline.

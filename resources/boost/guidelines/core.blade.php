@@ -1,82 +1,56 @@
-## Duo - Local-First Offline Syncing
+## Duo — Local-First Livewire
 
-Duo provides local-first IndexedDB syncing for Laravel and Livewire applications. It enables offline functionality with automatic background sync to the server.
+Duo makes a Livewire 4 component local-first: reads come from IndexedDB, writes apply optimistically and then run the component's own Livewire methods, and actions that cannot reach the server are queued and replayed. Duo adds no API endpoints and never writes to the database itself — the author's Livewire methods stay the single write path, so validation, authorization, and events keep working unchanged.
 
-### Core Concepts
+Requires Livewire 4 (class-based or single-file components) and Laravel 12.
 
-- **Models**: Add the `Syncable` trait to enable offline sync
-- **Components**: Use `WithDuo` trait on Livewire components for reactive offline data
-- **Sync**: Optimistic updates to IndexedDB with background server sync
-- **Auth**: Uses session-based authentication (web middleware) for offline persistence
+### Setup checklist
 
-### Required Setup
-
-1. **Add @duoMeta directive** - CRITICAL: Must be in the `<head>` section of your layout. This provides the CSRF token and cache metadata.
+1. Model: add the `JoshCirre\Duo\Syncable` trait to each Eloquent model that should be mirrored.
+2. Layout: put `@duoMeta` in the `<head>` of the main layout.
+3. Vite: add `duo()` from `@joshcirre/vite-plugin-duo` to `vite.config.js` plugins. It generates `resources/js/duo/manifest.json` and injects `initializeDuo()` into `resources/js/app.js`.
+4. Component: add the `JoshCirre\Duo\WithDuo` trait and the `data-duo-*` markers described below.
+5. After adding or changing a `Syncable` model, run `php artisan duo:generate` (the Vite dev server does this automatically).
 
 @verbatim
-<code-snippet name="Add @duoMeta to layout head" lang="blade">
+<code-snippet name="Layout head" lang="blade">
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-@duoMeta
-
-    <title>{{ $title ?? config('app.name') }}</title>
-    <!-- other head content -->
+    @duoMeta
+    @vite(['resources/css/app.css', 'resources/js/app.js'])
 </head>
 </code-snippet>
 @endverbatim
 
-2. **Configure Vite** - Add Duo plugin to `vite.config.js`:
-
 @verbatim
-<code-snippet name="Vite configuration" lang="js">
+<code-snippet name="vite.config.js" lang="js">
 import { defineConfig } from 'vite';
 import laravel from 'laravel-vite-plugin';
-import duo from '@joshcirre/vite-plugin-duo';
+import { duo } from '@joshcirre/vite-plugin-duo';
 
 export default defineConfig({
     plugins: [
-        laravel({
-            input: ['resources/css/app.css', 'resources/js/app.js'],
-            refresh: true,
-        }),
+        laravel({ input: ['resources/css/app.css', 'resources/js/app.js'], refresh: true }),
         duo(),
     ],
 });
 </code-snippet>
 @endverbatim
 
-3. **Add user_id column** - For user-scoped models, add migration:
+### Models
 
 @verbatim
-<code-snippet name="Migration for user-scoped model" lang="php">
-Schema::create('todos', function (Blueprint $table) {
-    $table->id();
-    $table->foreignId('user_id')->constrained()->cascadeOnDelete();
-    $table->string('title');
-    $table->boolean('completed')->default(false);
-    $table->timestamps();
-});
-</code-snippet>
-@endverbatim
-
-### Model Configuration
-
-Add the `Syncable` trait to models you want to sync offline. Duo automatically detects `$fillable` or `$guarded` properties and extracts the database schema.
-
-@verbatim
-<code-snippet name="Basic syncable model" lang="php">
+<code-snippet name="Syncable model" lang="php">
 use JoshCirre\Duo\Syncable;
 
 class Todo extends Model
 {
     use Syncable;
 
-    protected $fillable = ['title', 'completed', 'description'];
+    protected $fillable = ['title', 'description', 'completed'];
 
-    protected $casts = [
-        'completed' => 'boolean',
-    ];
+    protected $casts = ['completed' => 'boolean'];
 
     public function user()
     {
@@ -86,224 +60,118 @@ class Todo extends Model
 </code-snippet>
 @endverbatim
 
-**IMPORTANT**: For models with a `user()` relationship:
-- Do NOT add `user_id` to `$fillable` (security risk - users could assign items to others)
-- Duo automatically assigns `user_id` from the authenticated user during sync
-- The model must have a `user()` relationship method for auto-assignment to work
+- Do NOT add `user_id` to `$fillable`. Assign ownership in the Livewire method (`auth()->user()->todos()->create([...])`).
+- Duo reads `$fillable`/`$guarded` and the table schema to build the IndexedDB store; nothing else is needed on the model.
+
+### Components
+
+Write ordinary Livewire. Expose the list as a `#[Computed]` method and reference it as `$this->todos` in the view. Wrap the `@forelse` in a `data-duo-collection` element and add markers for every value shown inside the loop.
 
 @verbatim
-<code-snippet name="User-scoped model (note: user_id NOT in fillable)" lang="php">
-class Todo extends Model
-{
-    use Syncable;
+<code-snippet name="Livewire 4 single-file component with Duo" lang="blade">
+<?php
 
-    // CORRECT: user_id is NOT in $fillable for security
-    protected $fillable = ['title', 'completed', 'description'];
-
-    // This relationship tells Duo to auto-assign user_id
-    public function user()
-    {
-        return $this->belongsTo(User::class);
-    }
-}
-</code-snippet>
-@endverbatim
-
-### Livewire Components
-
-Use the `WithDuo` trait on Livewire components to enable reactive offline data. Duo transforms Livewire wire: directives to Alpine.js for offline functionality.
-
-@verbatim
-<code-snippet name="Livewire component with Duo" lang="php">
 use JoshCirre\Duo\WithDuo;
+use Livewire\Attributes\Computed;
+use Livewire\Component;
+use App\Models\Todo;
 
-class Todos extends Component
-{
+new class extends Component {
     use WithDuo;
 
-    #[Computed]
-    public function todos()
+    public string $newTodoTitle = '';
+
+    public function addTodo(): void
     {
-        return auth()->user()
-            ->todos()
-            ->latest()
-            ->get();
+        $this->validate(['newTodoTitle' => 'required|min:3']);
+
+        auth()->user()->todos()->create([
+            'title' => $this->newTodoTitle,
+            'completed' => false,
+        ]);
+
+        $this->reset('newTodoTitle');
     }
 
-    public function toggleCompleted($id)
+    public function toggleTodo($id): void
     {
         $todo = auth()->user()->todos()->findOrFail($id);
-        $todo->update(['completed' => !$todo->completed]);
+        $todo->update(['completed' => ! $todo->completed]);
     }
 
-    public function deleteTodo($id)
+    public function deleteTodo($id): void
     {
         auth()->user()->todos()->findOrFail($id)->delete();
     }
 
-    public function render()
+    #[Computed]
+    public function todos()
     {
-        return view('livewire.todos');
+        return auth()->user()->todos()->latest()->get();
     }
-}
-</code-snippet>
-@endverbatim
+}; ?>
 
-### Component Configuration
-
-Duo provides type-safe, per-component configuration through the `duoConfig()` method. Component config overrides global settings from `config/duo.php`.
-
-@verbatim
-<code-snippet name="Component with custom configuration" lang="php">
-use JoshCirre\Duo\{WithDuo, DuoConfig};
-
-class Todos extends Component
-{
-    use WithDuo;
-
-    protected function duoConfig(): DuoConfig
-    {
-        return DuoConfig::make(
-            syncInterval: 3000,              // Sync every 3 seconds
-            timestampRefreshInterval: 5000,  // Refresh timestamps every 5 seconds
-            maxRetryAttempts: 5,             // Retry failed syncs 5 times
-            debug: true                      // Enable debug logging
-        );
-    }
-
-    // ... rest of component
-}
-</code-snippet>
-@endverbatim
-
-**Available Configuration Options:**
-
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `syncInterval` | int | 5000 | Milliseconds between sync attempts to server |
-| `timestampRefreshInterval` | int | 10000 | Milliseconds between timestamp updates (for `diffForHumans()`, etc.) |
-| `maxRetryAttempts` | int | 3 | Maximum retry attempts for failed sync operations |
-| `debug` | bool | false | Enable verbose console logging |
-
-**Configuration Priority:** Component `duoConfig()` > Global `config/duo.php` > Defaults
-
-### View Patterns
-
-Duo automatically transforms Blade loops to Alpine.js for reactive rendering:
-
-@verbatim
-<code-snippet name="Reactive todo list view" lang="blade">
 <div>
-    <div class="space-y-4">
+    <form wire:submit="addTodo">
+        <input type="text" wire:model="newTodoTitle">
+        @error('newTodoTitle') <span class="text-red-600">{{ $message }}</span> @enderror
+        <button type="submit">Add</button>
+    </form>
+
+    <div data-duo-collection="todos" data-duo-key="id">
         @forelse($this->todos as $todo)
-            <div class="flex items-center gap-4">
-                <input
-                    type="checkbox"
-                    wire:click="toggleCompleted({{ $todo->id }})"
-                    {{ $todo->completed ? 'checked' : '' }}
-                />
-                <span>{{ $todo->title }}</span>
+            <div data-duo-template wire:key="{{ $todo->id }}">
+                <input type="checkbox" wire:click="toggleTodo({{ $todo->id }})" data-duo-checked="completed">
+                <span data-duo-text="title">{{ $todo->title }}</span>
                 <button wire:click="deleteTodo({{ $todo->id }})">Delete</button>
             </div>
         @empty
-            <p>No todos yet</p>
+            <p data-duo-empty>No todos yet</p>
         @endforelse
     </div>
 </div>
 </code-snippet>
 @endverbatim
 
-### Listen for Sync Events
+For class-based components, `use WithDuo` on the class and put the same markup in its view.
 
-Duo dispatches a `duo-synced` event whenever a sync operation completes successfully. You can listen for this event to trigger custom behavior:
+### Marker reference
 
-**Livewire Components:**
+Inside `data-duo-collection`, the loop runs in the browser, so Blade echoes without a marker render empty. Use:
 
-@verbatim
-<code-snippet name="Listen for sync events in Livewire" lang="php">
-use Livewire\Attributes\On;
+- `data-duo-collection="todos"` on the wrapper around `@forelse`; the value is the component property or computed method name.
+- `data-duo-key="id"` primary key field (default `id`).
+- `data-duo-template` on the single root element of each iteration (keep `wire:key` too).
+- `data-duo-empty` on the `@empty` element.
+- `data-duo-text="title"` → `x-text="item.title"`; `data-duo-html="body"` → `x-html`; `data-duo-show="description"` → `x-show`; `data-duo-checked="completed"` → `:checked`; `data-duo-bind:href="url"` → `:href="item.url"`; `data-duo-class="{ 'line-through': item.completed }"` → `:class` (Alpine expression; `item` is the row).
 
-#[On('duo-synced')]
-public function handleSyncComplete()
-{
-    // Refresh data, show notification, etc.
-    $this->dispatch('notify', message: 'Changes synced!');
-}
-</code-snippet>
-@endverbatim
+Duo compiles `wire:submit`, `wire:model` (any modifier), and `wire:click` to calls on its Alpine `duo` scope, and `wire:click="method({{ $todo->id }})"` inside the template to `duo.call('method', [item.id])`. Everything outside the collection is normal Livewire and keeps morphing (this is where `@error` blocks must live).
 
-**Alpine Components:**
+### Writing methods Duo can predict
 
-@verbatim
-<code-snippet name="Listen for sync events in Alpine" lang="blade">
-<!-- Using Alpine's @event directive -->
-<div @duo-synced.window="handleSync($event.detail)">
-    <!-- Your component -->
-</div>
+Duo reads each public method's source to infer the optimistic change. The server's report of what actually happened always wins, so a miss only costs the instant update.
 
-<!-- Or in Alpine x-data -->
-<div x-data="{
-    init() {
-        window.addEventListener('duo-synced', (event) => {
-            console.log('Sync completed:', event.detail.operation);
-            // event.detail.operation contains: id, storeName, operation, data, timestamp
-        });
-    }
-}">
-    <!-- Your component -->
-</div>
-</code-snippet>
-@endverbatim
+- `Model::create([...])` / `$relation->create([...])` → create; `->update([...])` / `->save()` → update; `->delete()` / `::destroy()` → delete.
+- `'completed' => ! $todo->completed` → optimistic toggle of `completed`.
+- `'title' => $this->newTodoTitle` → the `newTodoTitle` property maps to the `title` column on the optimistic record.
+- `'completed' => false` → default value on the optimistic record.
 
-**Vanilla JavaScript:**
+Keep the attribute arrays passed to `create()`/`update()`/`fill()` literal. Building them dynamically (`$request->only(...)`, a variable) still works but disables optimistic rendering for that method.
 
-@verbatim
-<code-snippet name="Listen for sync events in JavaScript" lang="js">
-window.addEventListener('duo-synced', (event) => {
-    const { operation } = event.detail;
-    console.log('Synced:', operation.storeName, operation.operation);
-});
-</code-snippet>
-@endverbatim
+### Behaviour to explain to users
 
-**Use Cases:**
-- Refreshing server-side data displays after sync
-- Showing toast notifications when changes are saved
-- Tracking sync analytics
-- Updating UI indicators
-
-### Sync Status Component
-
-@verbatim
-<code-snippet name="Sync status component" lang="blade">
-<x-duo::sync-status />
-<x-duo::sync-status position="top-left" />
-<x-duo::sync-status :show-delay="2000" :show-success="true" />
-</code-snippet>
-@endverbatim
-
-**Props:** `position` (top-right|top-left|bottom-right|bottom-left), `inline` (bool), `showDelay` (ms, default 1000), `showSuccess` (bool, default false)
-**Behavior:** Shows "Offline" when offline. Only shows "Syncing" if sync takes longer than `showDelay`. Optionally shows "Synced" if `showSuccess=true`.
-
-### Important Notes
-
-- **Authentication**: Duo uses session-based auth (web middleware) so authentication persists across page refreshes, even offline
-- **CSRF Token**: The `@duoMeta` directive must be present for sync requests to work
-- **Sync Routes**: Automatically registered at `/api/duo/{table}` with web middleware
-- **Schema Detection**: Duo automatically reads your database schema and maps types to JavaScript
-- **Optimistic Updates**: Changes appear instantly in the UI, then sync in the background
-- **Offline Support**: Service worker enables offline page access and queues operations until online
+- Validation failures, policy denials, and exceptions roll the optimistic change back; Livewire renders the errors as usual.
+- Offline (or a failed request) queues the action in `localStorage`; it replays through `$wire` when back online or on the next page load.
+- Pages with `@duoMeta` are cached by the service worker after one online visit and then load with no network.
+- The collection is treated as the complete mirror of the store: do not use Duo markers on paginated or filtered collections.
+- Blade components (including Flux) inside `data-duo-template` are not reactive; use plain elements with markers there.
+- `<x-duo::sync-status />` shows offline/syncing badges; `<x-duo::debug />` (local only) inspects and clears IndexedDB.
 
 ### Commands
 
 @verbatim
-<code-snippet name="Generate manifest after model changes" lang="bash">
-php artisan duo:manifest
-</code-snippet>
-@endverbatim
-
-@verbatim
-<code-snippet name="Discover all models with Syncable trait" lang="bash">
-php artisan duo:discover
+<code-snippet name="Artisan commands" lang="bash">
+php artisan duo:discover   # list Syncable models
+php artisan duo:generate   # regenerate resources/js/duo/manifest.json
 </code-snippet>
 @endverbatim

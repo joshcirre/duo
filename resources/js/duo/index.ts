@@ -1,38 +1,56 @@
-import { DuoDatabase, type DuoConfig, type DuoRecord } from './core/database';
-import { SyncQueue, type SyncQueueConfig } from './sync/queue';
-import { ServiceWorkerManager, type ServiceWorkerConfig } from './offline/service-worker-manager';
-import { DuoLivewireInterceptor } from './livewire/duo-interceptor';
-import { DuoDomCompiler } from './compiler/dom-compiler';
 import { liveQuery } from 'dexie';
+import { registerDuoAlpineComponent } from './alpine/duo-component';
+import { DuoDatabase, type DuoConfig, type DuoRecord, type StoreConfig } from './core/database';
+import { getClient, markReady, whenReady } from './core/runtime';
+import { DuoLivewireInterceptor } from './livewire/duo-interceptor';
+import { ServiceWorkerManager, type ServiceWorkerConfig } from './offline/service-worker-manager';
+import { ActionQueue, type QueuedAction } from './sync/action-queue';
 
 export interface DuoClientConfig {
   manifest?: Record<string, any>;
   manifestPath?: string;
-  syncInterval?: number;
-  maxRetries?: number;
   debug?: boolean;
   offline?: ServiceWorkerConfig;
+  /** @deprecated No longer used — sync goes through Livewire actions. */
+  syncInterval?: number;
+  /** @deprecated No longer used — sync goes through Livewire actions. */
+  maxRetries?: number;
+}
+
+// Register the Alpine `duo` scope the moment this module loads. Livewire
+// starts Alpine on DOMContentLoaded and immediately walks the DOM, where the
+// server has already placed x-data="duo" on compiled components — the scope
+// has to be registered before that walk, not after IndexedDB opens.
+if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+  if (window.Alpine) {
+    registerDuoAlpineComponent(window.Alpine);
+  } else {
+    document.addEventListener(
+      'alpine:init',
+      () => {
+        if (window.Alpine) registerDuoAlpineComponent(window.Alpine);
+      },
+      { once: true }
+    );
+  }
 }
 
 export class DuoClient {
   private db?: DuoDatabase;
-  private syncQueue?: SyncQueue;
+  private queue?: ActionQueue;
   private serviceWorkerManager?: ServiceWorkerManager;
   private interceptor?: DuoLivewireInterceptor;
-  private compiler?: DuoDomCompiler;
   private config: DuoClientConfig;
 
   constructor(config: DuoClientConfig = {}) {
     this.config = {
       manifestPath: '/js/duo/manifest.json',
-      syncInterval: 5000,
-      maxRetries: 3,
       debug: false,
+      ...config,
       offline: {
         enabled: true,
         ...config.offline,
       },
-      ...config,
     };
   }
 
@@ -56,51 +74,47 @@ export class DuoClient {
       console.log(`[Duo] Database initialized: ${databaseName}`);
     }
 
-    const syncConfig: SyncQueueConfig = {
-      maxRetries: this.config.maxRetries!,
-      syncInterval: this.config.syncInterval!,
+    this.queue = new ActionQueue(this.db, {
+      storageKey: `duo:actions:${databaseName}`,
       debug: this.config.debug,
-      onSyncSuccess: (operation) => {
-        if (this.config.debug) {
-          console.log('[Duo] Sync successful:', operation);
-        }
-        window.dispatchEvent(
-          new CustomEvent('duo-synced', { detail: { operation } })
-        );
-        if (window.Livewire) {
-          window.Livewire.dispatch('duo-synced', { operation });
-        }
-      },
-      onSyncError: (operation, error) => {
-        console.error('[Duo] Sync failed:', operation, error);
-      },
-    };
+    });
+    this.queue.listen();
+    await this.queue.reconcileOrphans();
 
-    this.syncQueue = new SyncQueue(this.db, syncConfig);
-    this.syncQueue.start();
-
-    // Initialize the Livewire interceptor for server state caching
-    this.interceptor = new DuoLivewireInterceptor(this.db, this.syncQueue, {
+    this.interceptor = new DuoLivewireInterceptor(this.db, this.queue, {
       debug: this.config.debug,
     });
     this.interceptor.initialize();
 
-    // Initialize the DOM compiler for client-side Alpine rewriting
-    this.compiler = new DuoDomCompiler(this.db, this.syncQueue, {
-      debug: this.config.debug,
-    });
-    this.compiler.initialize();
-
-    // Register service worker for offline page caching
     if (this.config.offline?.enabled !== false) {
       this.serviceWorkerManager = new ServiceWorkerManager(this.config.offline);
       await this.serviceWorkerManager.register();
     }
 
+    markReady(this);
+    this.scheduleReplay();
+
     if (this.config.debug) {
       console.log('[Duo] Client initialized');
       const stats = await this.db.getStats();
       console.log('[Duo] Database stats:', stats);
+    }
+  }
+
+  /**
+   * Replay anything left in the queue once Livewire has initialized the
+   * components on this page.
+   */
+  private scheduleReplay(): void {
+    const kick = () => {
+      if (navigator.onLine) void this.queue?.replay();
+    };
+
+    const components = window.Livewire?.all?.() ?? [];
+    if (components.length > 0) {
+      kick();
+    } else {
+      document.addEventListener('livewire:initialized', kick, { once: true });
     }
   }
 
@@ -118,27 +132,20 @@ export class DuoClient {
   }
 
   private generateDatabaseName(): string {
-    const origin = window.location.origin;
-    const hash = this.simpleHash(origin);
-    return `duo_${hash}`;
-  }
-
-  private simpleHash(str: string): string {
-    let hash = 0;
-    for (let i = 0; i < str.length; i++) {
-      const char = str.charCodeAt(i);
-      hash = (hash << 5) - hash + char;
-      hash = hash & hash;
-    }
-    return Math.abs(hash).toString(36);
+    return `duo_${simpleHash(window.location.origin)}`;
   }
 
   getDatabase(): DuoDatabase | undefined {
     return this.db;
   }
 
-  getSyncQueue(): SyncQueue | undefined {
-    return this.syncQueue;
+  getActionQueue(): ActionQueue | undefined {
+    return this.queue;
+  }
+
+  /** @deprecated Use getActionQueue(). */
+  getSyncQueue(): ActionQueue | undefined {
+    return this.queue;
   }
 
   getInterceptor(): DuoLivewireInterceptor | undefined {
@@ -149,18 +156,12 @@ export class DuoClient {
     return this.serviceWorkerManager;
   }
 
-  getCompiler(): DuoDomCompiler | undefined {
-    return this.compiler;
-  }
-
   liveQuery<T>(querier: () => T | Promise<T>) {
     return liveQuery(querier);
   }
 
   async sync(): Promise<void> {
-    if (this.config.debug) {
-      console.log('[Duo] Manual sync triggered');
-    }
+    await this.queue?.replay();
   }
 
   async clearCache(): Promise<void> {
@@ -172,8 +173,8 @@ export class DuoClient {
   }
 
   async destroy(): Promise<void> {
-    this.compiler?.destroy();
-    this.syncQueue?.stop();
+    this.interceptor?.destroy();
+    this.queue?.destroy();
     await this.db?.close();
     await this.serviceWorkerManager?.unregister();
 
@@ -183,154 +184,42 @@ export class DuoClient {
   }
 }
 
-// Global instance
+function simpleHash(str: string): string {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = (hash << 5) - hash + str.charCodeAt(i);
+    hash = hash & hash;
+  }
+  return Math.abs(hash).toString(36);
+}
+
 let duoInstance: DuoClient | null = null;
+let initializing: Promise<DuoClient> | null = null;
 
-export async function initializeDuo(
-  config?: DuoClientConfig
-): Promise<DuoClient> {
-  if (duoInstance) {
-    return duoInstance;
-  }
+export async function initializeDuo(config?: DuoClientConfig): Promise<DuoClient> {
+  if (duoInstance) return duoInstance;
+  if (initializing) return initializing;
 
-  duoInstance = new DuoClient(config);
-  await duoInstance.initialize();
+  initializing = (async () => {
+    const client = new DuoClient(config);
+    await client.initialize();
+    duoInstance = client;
 
-  if (typeof window !== 'undefined') {
-    (window as any).duo = duoInstance;
-  }
+    if (typeof window !== 'undefined') {
+      (window as any).duo = client;
+    }
 
-  return duoInstance;
+    return client;
+  })();
+
+  return initializing;
 }
 
 export function getDuo(): DuoClient | null {
-  return duoInstance;
+  return duoInstance ?? getClient();
 }
 
-export { DuoDatabase, SyncQueue, DuoLivewireInterceptor, DuoDomCompiler };
-export type { DuoConfig, DuoRecord, SyncQueueConfig };
-
-// Helper functions for easy data access
-export async function getAll(table: string): Promise<any[]> {
-  const duo = getDuo();
-  if (!duo || !duo.getDatabase()) return [];
-
-  const storeName = `App_Models_${table.charAt(0).toUpperCase() + table.slice(1)}`;
-  const store = duo.getDatabase()!.getStore(storeName);
-
-  if (!store) return [];
-  return await store.toArray();
-}
-
-export async function getById(
-  table: string,
-  id: number | string
-): Promise<any | null> {
-  const duo = getDuo();
-  if (!duo || !duo.getDatabase()) return null;
-
-  const storeName = `App_Models_${table.charAt(0).toUpperCase() + table.slice(1)}`;
-  const store = duo.getDatabase()!.getStore(storeName);
-
-  if (!store) return null;
-  return await store.get(id);
-}
-
-export async function create(
-  table: string,
-  data: Record<string, any>
-): Promise<any> {
-  const duo = getDuo();
-  if (!duo || !duo.getDatabase() || !duo.getSyncQueue()) {
-    throw new Error('Duo not initialized');
-  }
-
-  const storeName = `App_Models_${table.charAt(0).toUpperCase() + table.slice(1)}`;
-  const store = duo.getDatabase()!.getStore(storeName);
-
-  if (!store) throw new Error(`Store not found: ${storeName}`);
-
-  const tempId = Date.now();
-  const record = {
-    ...data,
-    id: tempId,
-    _duo_pending_sync: true,
-    _duo_operation: 'create' as const,
-  };
-
-  await store.put(record);
-
-  await duo.getSyncQueue()!.enqueue({
-    storeName,
-    operation: 'create',
-    data: record,
-  });
-
-  return record;
-}
-
-export async function update(
-  table: string,
-  id: number | string,
-  data: Record<string, any>
-): Promise<any> {
-  const duo = getDuo();
-  if (!duo || !duo.getDatabase() || !duo.getSyncQueue()) {
-    throw new Error('Duo not initialized');
-  }
-
-  const storeName = `App_Models_${table.charAt(0).toUpperCase() + table.slice(1)}`;
-  const store = duo.getDatabase()!.getStore(storeName);
-
-  if (!store) throw new Error(`Store not found: ${storeName}`);
-
-  const existing = await store.get(id);
-  if (!existing) throw new Error(`Record not found: ${id}`);
-
-  const updated = {
-    ...existing,
-    ...data,
-    _duo_pending_sync: true,
-    _duo_operation: 'update' as const,
-  };
-
-  await store.put(updated);
-
-  await duo.getSyncQueue()!.enqueue({
-    storeName,
-    operation: 'update',
-    data: updated,
-  });
-
-  return updated;
-}
-
-export async function remove(
-  table: string,
-  id: number | string
-): Promise<void> {
-  const duo = getDuo();
-  if (!duo || !duo.getDatabase() || !duo.getSyncQueue()) {
-    throw new Error('Duo not initialized');
-  }
-
-  const storeName = `App_Models_${table.charAt(0).toUpperCase() + table.slice(1)}`;
-  const store = duo.getDatabase()!.getStore(storeName);
-
-  if (!store) throw new Error(`Store not found: ${storeName}`);
-
-  const existing = await store.get(id);
-  if (!existing) return;
-
-  await store.put({
-    ...existing,
-    _duo_pending_sync: true,
-    _duo_operation: 'delete' as const,
-  });
-
-  await duo.getSyncQueue()!.enqueue({
-    storeName,
-    operation: 'delete',
-    data: existing,
-  });
-}
+export { whenReady as duoReady };
+export { DuoDatabase, ActionQueue, DuoLivewireInterceptor, registerDuoAlpineComponent };
+export type { DuoConfig, DuoRecord, StoreConfig, QueuedAction };
+export type { DuoComponentMeta, DuoEffect, DuoOperation } from './livewire/types';

@@ -1,9 +1,49 @@
 {
-  "Workbench_App_Models_Todo": {
-    "model": "Workbench\\App\\Models\\Todo",
-    "table": "todos",
-    "primaryKey": "id",
-    "indexes": ["id"],
-    "timestamps": true
-  }
+    "_version": 1788302362,
+    "stores": {
+        "Workbench_App_Models_Todo": {
+            "model": "Workbench\\App\\Models\\Todo",
+            "table": "todos",
+            "primaryKey": "id",
+            "indexes": [
+                "id",
+                "created_at",
+                "updated_at"
+            ],
+            "timestamps": true,
+            "schema": {
+                "id": {
+                    "type": "number",
+                    "nullable": false,
+                    "default": null,
+                    "autoIncrement": true
+                },
+                "title": {
+                    "type": "string",
+                    "nullable": false,
+                    "default": null
+                },
+                "completed": {
+                    "type": "number",
+                    "nullable": false,
+                    "default": "'0'"
+                },
+                "description": {
+                    "type": "string",
+                    "nullable": true,
+                    "default": null
+                },
+                "created_at": {
+                    "type": "date",
+                    "nullable": true,
+                    "default": null
+                },
+                "updated_at": {
+                    "type": "date",
+                    "nullable": true,
+                    "default": null
+                }
+            }
+        }
+    }
 }

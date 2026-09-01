@@ -6,7 +6,6 @@ namespace Workbench\App\Providers;
 
 use Illuminate\Support\ServiceProvider;
 use Livewire\Livewire;
-use Workbench\App\Livewire\TodoList;
 
 class WorkbenchServiceProvider extends ServiceProvider
 {
@@ -15,7 +14,8 @@ class WorkbenchServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        //
+        // Point Duo model discovery at the workbench models
+        config()->set('duo.model_paths', [__DIR__.'/../Models']);
     }
 
     /**
@@ -23,8 +23,8 @@ class WorkbenchServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
-        // Register Livewire components
-        Livewire::component('todo-list', TodoList::class);
+        // Register the workbench's Livewire 4 single-file components
+        Livewire::addLocation(viewPath: __DIR__.'/../../resources/views/components');
 
         // Load views
         $this->loadViewsFrom(__DIR__.'/../../resources/views', 'workbench');
